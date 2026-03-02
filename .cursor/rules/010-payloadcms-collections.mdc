@@ -1,0 +1,230 @@
+---
+description: Schema, pattern e regole operative per tutte le Collection PayloadCMS del progetto int26-middleware-payload. Usare per qualsiasi azione su Collection esistenti o nuove.
+globs: src/collections/**/*.ts, src/access/permissions.ts, payload.config.ts
+alwaysApply: false
+---
+
+# 010 — PayloadCMS Collections: Pattern & Regole
+
+## Collection esistenti e group UI
+
+| Collection | Slug | Group | Release |
+|-----------|------|-------|---------|
+| `Users` | `users` | `Sistema` | esistente |
+| `Media` | `media` | `Media` | esistente |
+| `AutoApprovalRules` | `auto-approval-rules` | `Assenze` | R1 |
+| `AbsenceLog` | `absence-log` | `Assenze` | R1 |
+| `InvoicePendingReview` | `invoice-pending-review` | `Fatture` | R2 |
+| `InvoiceLog` | `invoice-log` | `Fatture` | R2 |
+
+Ogni Collection DEVE avere `admin.group` impostato al valore della colonna Group.
+
+```typescript
+// Esempio obbligatorio su ogni Collection
+admin: {
+  group: 'Assenze',  // 'Fatture' | 'Sistema' | 'Media' | 'Configurazione'
+  useAsTitle: 'fieldName',
+  defaultColumns: ['field1', 'field2', 'status', 'createdAt'],
+}
+```
+
+---
+
+## Sistema permessi — Pattern Adapter (OBBLIGATORIO)
+
+**MAI scrivere logica di accesso inline nelle Collection.**
+**SEMPRE** usare `canRead` e `canWrite` da `src/access/permissions.ts`.
+
+```typescript
+import { canRead, canWrite } from '@/access/permissions'
+
+// In ogni Collection:
+access: {
+  read:   canRead('absenceLog'),          // sostituire con il resource name corretto
+  create: canWrite('absenceLog'),
+  update: canWrite('absenceLog'),
+  delete: () => false,                    // i log non si cancellano mai
+},
+```
+
+### Resource names validi
+
+```typescript
+type Resource =
+  | 'autoApprovalRules'
+  | 'absenceLog'
+  | 'invoicePendingReview'
+  | 'invoiceLog'
+```
+
+### Aggiungere una nuova risorsa
+
+1. Aggiungere il tipo a `Resource` in `permissions.ts`
+2. Aggiungere la voce in `PERMISSIONS` con i ruoli `read` e `write`
+3. La Collection usa `canRead('nuovaRisorsa')` — nessuna altra modifica
+
+### Ruoli disponibili
+
+```typescript
+type Role = 'admin' | 'hr' | 'amministrazione' | 'sistema'
+```
+
+| Ruolo | Accesso |
+|-------|---------|
+| `admin` | tutto |
+| `hr` | `absenceLog` read |
+| `amministrazione` | `invoicePendingReview` read/write, `invoiceLog` read |
+| `sistema` | write su tutti i log (webhook handler + worker) |
+
+Il ruolo è nel JWT (`saveToJWT: true` in `Users`) — no lookup DB per ogni richiesta.
+
+### Matrice permessi attuale (Livello 1 — oggetto statico)
+
+```typescript
+const PERMISSIONS = {
+  autoApprovalRules:    { read: ['admin'],                         write: ['admin'] },
+  absenceLog:           { read: ['admin', 'hr'],                   write: ['admin', 'sistema'] },
+  invoicePendingReview: { read: ['admin', 'amministrazione'],       write: ['admin', 'amministrazione'] },
+  invoiceLog:           { read: ['admin', 'amministrazione'],       write: ['admin', 'sistema'] },
+}
+```
+
+---
+
+## Pattern obbligatorio per Collection di log
+
+Ogni Collection di log (`AbsenceLog`, `InvoiceLog`) DEVE avere questi campi:
+
+```typescript
+// Campi audit obbligatori — tutti readOnly dall'UI
+{ name: 'status',      type: 'select', required: true, index: true,
+  admin: { readOnly: true } },
+{ name: 'attempts',    type: 'number', defaultValue: 0,
+  admin: { readOnly: true } },
+{ name: 'lastError',   type: 'textarea',
+  admin: { readOnly: true } },
+{ name: 'processedAt', type: 'date',
+  admin: { readOnly: true } },
+{ name: 'rawPayload',  type: 'json', required: true,
+  admin: { readOnly: true } },
+```
+
+I log non si cancellano mai: `delete: () => false` è obbligatorio.
+
+---
+
+## State machine AbsenceLog
+
+```
+received → processing → approved       (pseudo in AutoApprovalRules, PUT Furious ok)
+                     → skipped         (pseudo non in AutoApprovalRules)
+                     → failed_permanent (5 tentativi falliti o errore non-retriable)
+```
+
+Stati terminali: `approved`, `skipped`, `failed_permanent`.
+L'hook `beforeChange` imposta `processedAt` automaticamente alla transizione verso
+uno stato terminale. Mai impostare `processedAt` manualmente.
+
+```typescript
+// Hook da registrare in AbsenceLog
+hooks: {
+  beforeChange: [setProcessedAtOnTerminalStatus],
+}
+
+// Implementazione hook in src/hooks/setProcessedAtOnTerminalStatus.ts
+const TERMINAL_STATUSES = ['approved', 'skipped', 'failed_permanent']
+
+export const setProcessedAtOnTerminalStatus: CollectionBeforeChangeHook = ({ data, originalDoc }) => {
+  if (TERMINAL_STATUSES.includes(data.status) && !originalDoc?.processedAt) {
+    data.processedAt = new Date().toISOString()
+  }
+  return data
+}
+```
+
+---
+
+## AutoApprovalRules — campo flowType
+
+Il campo `flowType` è obbligatorio e rende la Collection riutilizzabile per flussi futuri.
+
+```typescript
+{
+  name: 'flowType',
+  type: 'select',
+  required: true,
+  defaultValue: 'absence',
+  options: [
+    { label: 'Assenze', value: 'absence' },
+    // aggiungere valori qui per flussi futuri — mai rimuovere quelli esistenti
+  ],
+  index: true,
+}
+```
+
+Query nel worker assenze:
+
+```typescript
+const rule = await payload.find({
+  collection: 'auto-approval-rules',
+  where: {
+    and: [
+      { pseudo:    { equals: webhookPseudo } },
+      { flowType:  { equals: 'absence' } },
+    ],
+  },
+  limit: 1,
+})
+```
+
+---
+
+## Media e storage GCS multi-bucket
+
+Ogni tipologia di media ha una Collection con bucket GCS dedicato.
+Il bucket viene SEMPRE letto da env vars — mai hardcoded.
+
+```typescript
+// payload.config.ts
+gcsStorage({
+  collections: {
+    'media-documents': { bucket: process.env.GCS_BUCKET_DOCUMENTS! },
+    'media-images':    { bucket: process.env.GCS_BUCKET_IMAGES! },
+  },
+})
+```
+
+Ogni Collection media usa `admin.group: 'Media'`.
+
+Per aggiungere una tipologia: Collection slug + env var + voce in `gcsStorage`.
+
+---
+
+## Indici — riepilogo
+
+Usare `index: true` su ogni campo che compare in `where` o `orderBy` nelle query:
+
+| Collection | Campi con index |
+|-----------|-----------------|
+| `AutoApprovalRules` | `pseudo` (unique), `flowType` |
+| `AbsenceLog` | `furiousAbsenceId`, `pseudo`, `status` |
+| `InvoicePendingReview` | `furiousInvoiceId`, `startyInvoiceId`, `status` |
+| `InvoiceLog` | `furiousInvoiceId`, `startyInvoiceId`, `status` |
+
+Compound index `pseudo + flowType` su `AutoApprovalRules`: definire nello schema
+Drizzle con migration manuale se non supportato nativamente da PayloadCMS.
+
+---
+
+## Checklist per ogni nuova Collection
+
+- [ ] `admin.group` impostato al gruppo corretto
+- [ ] `access` usa solo `canRead` / `canWrite` da `permissions.ts`
+- [ ] Se è un log: `delete: () => false`, tutti i campi audit presenti e `readOnly`
+- [ ] Se è un log: hook `setProcessedAtOnTerminalStatus` registrato
+- [ ] `index: true` su tutti i campi usati in query
+- [ ] Slug in kebab-case
+- [ ] Collection aggiunta a `payload.config.ts`
+- [ ] `generate:types` eseguito dopo la modifica allo schema
+- [ ] `tsc --noEmit` passa senza errori
+- [ ] `docs/project/010-collections.md` aggiornato
