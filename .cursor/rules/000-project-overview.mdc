@@ -1,0 +1,114 @@
+---
+title: Project Overview — int26-middleware-payload
+description: Contesto generale del progetto per agenti AI. Leggere SEMPRE come primo file.
+tags: [project, overview, context, always-apply]
+priority: critical
+alwaysApply: true
+---
+
+# PROGETTO: Middleware Furious ↔ Starty
+
+## Identità del progetto
+
+Questo repository è un **middleware PayloadCMS** che integra due sistemi ERP:
+- **Furious** (`dude.furious-squad.com`) — ERP aziendale SaaS, API v2
+- **Starty** (`dude.startyerp.cloud`) — Gestionale cloud interno, API v3
+
+Il middleware gira su **Google Cloud Run** con database **Cloud SQL PostgreSQL**.
+
+## Due flussi di integrazione
+
+### Release 1 — Flusso Assenze (ATTIVO)
+Auto-approvazione assenze per manager identificati.
+- Trigger: webhook Furious evento `conge_waiting`
+- Logica: se pseudo è in `AutoApprovalRules` → PUT Furious approva
+- Stato: in sviluppo
+
+### Release 2 — Flusso Fatture (STAND-BY)
+Sincronizzazione fatture passive Starty → Furious con revisione umana.
+- Trigger: webhook Starty evento `confirm` su fattura passiva
+- Logica: crea scheda revisione → operatore approva → POST Furious
+- Stato: in attesa di risposte amministrazione su campo PO
+
+## Stack tecnologico
+
+```
+PayloadCMS (Next.js App Router) — Node.js
+PostgreSQL (Cloud SQL) — database principale
+Google Cloud Tasks — queue asincrona worker
+Google Secret Manager — token API e HMAC secrets
+Google Cloud Run — hosting containerizzato
+Sentry — error tracking
+```
+
+## Principio architetturale OBBLIGATORIO
+
+> **Estensibilità by design**: ogni decisione tecnica viene valutata
+> per quanto facilmente permette di aggiungere nuovi flussi, entità
+> e sistemi senza modificare il codice esistente.
+
+Non è una best practice — è un vincolo. Se una soluzione è ottimale
+per il caso corrente ma crea attrito per estensioni future, va scartata.
+
+## Struttura src/ attesa
+
+```
+src/
+├── app/
+│   ├── (frontend)/
+│   └── (payload)/
+├── collections/
+│   ├── Users.ts
+│   ├── Media.ts
+│   ├── AutoApprovalRules.ts     # [R1]
+│   ├── AbsenceLog.ts            # [R1]
+│   ├── InvoicePendingReview.ts  # [R2]
+│   └── InvoiceLog.ts            # [R2]
+├── workers/
+│   ├── absence/processAbsence.ts    # [R1]
+│   └── invoice/processInvoice.ts   # [R2]
+├── webhooks/
+│   ├── furious/absence.ts           # [R1]
+│   └── starty/invoice.ts            # [R2]
+├── lib/
+│   ├── furious/auth.ts + api.ts
+│   ├── starty/auth.ts + api.ts
+│   ├── gcp/tasks.ts + secrets.ts
+│   └── queue/enqueue.ts
+├── access/
+├── hooks/
+└── payload.config.ts
+```
+
+## Ruoli utente
+
+| Ruolo | Accesso |
+|-------|---------|
+| `admin` | Tutto, incluse AutoApprovalRules |
+| `hr` | AbsenceLog read |
+| `amministrazione` | InvoicePendingReview read/write, InvoiceLog read |
+| `sistema` | Worker interni |
+
+## Autenticazione sistemi esterni
+
+### Furious API v2
+- Auth: POST /api/v2/auth/ → F-Auth-Token
+- Pattern: getFuriousToken() — verifica validità, rigenera se scaduto o 401
+- Storage: GCP Secret Manager con timestamp scadenza
+
+### Starty API v3
+- Auth: 3 step BasicAuth → ruolo → org → JWT
+- Pattern: getStartyToken() — stessa logica
+- Storage: GCP Secret Manager con timestamp scadenza
+
+## Sicurezza webhook
+
+- Furious: verifica firma HMAC header X-Furious-Signature
+- Starty: verifica HmacSha256 su X-StartyHook-Signature + X-StartyHook-Timestamp
+- Secret da GCP Secret Manager, mai in env vars nel codice
+
+## File di riferimento
+
+- Specifiche: docs/project/
+- Decision log: DECISIONS.md
+- Policy documentazione: .cursor/rules/001-documentation-policy.mdc

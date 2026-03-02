@@ -1,0 +1,126 @@
+---
+title: Documentation Policy — MANDATORY
+description: Regola obbligatoria di aggiornamento documentazione. Si applica ad ogni azione dell'agente.
+tags: [policy, documentation, mandatory, always-apply]
+priority: critical
+alwaysApply: true
+---
+
+# DOCUMENTATION POLICY — OBBLIGATORIA
+
+Questa regola si applica **ad ogni azione** che modifica codice, architettura, configurazione o logica di business.
+Non è opzionale. Non ha eccezioni. Va eseguita DOPO ogni modifica, PRIMA di considerare il task completato.
+
+---
+
+## LA REGOLA
+
+Dopo ogni azione significativa (creazione file, modifica logica, risoluzione bug, aggiunta feature, cambio configurazione), l'agente DEVE aggiornare **entrambi** i seguenti output:
+
+### Output 1 — Documentazione per Sviluppatori (`docs/project/`)
+- Linguaggio: italiano, chiaro, leggibile da un nuovo sviluppatore
+- Contenuto: cosa è stato fatto, perché, quale problema risolve, eventuali trade-off
+- File da aggiornare: quello corrispondente all'area modificata (vedi mappa sotto)
+- Stile: narrativo, con contesto di business, non solo tecnico
+
+### Output 2 — Regole Cursor (`.cursor/rules/`)
+- Linguaggio: tecnico denso, ottimizzato per LLM
+- Contenuto: pattern di codice aggiornati, interfacce, esempi concreti, vincoli
+- File da aggiornare: quello corrispondente all'area modificata (vedi mappa sotto)
+- Stile: dichiarativo, esempi di codice, zero prosa superflua
+
+### Output 3 — Decision Log (`DECISIONS.md`)
+- Aggiungere una voce ogni volta che:
+  - Si risolve un errore non banale
+  - Si cambia un'architettura rispetto alle specifiche
+  - Si scopre un comportamento inatteso di Furious API o Starty API
+  - Si sceglie un approccio alternativo a quello documentato
+- Formato voce:
+  ```
+  ## [DATA] Titolo breve
+  **Problema:** descrizione
+  **Causa:** causa identificata
+  **Soluzione:** soluzione adottata
+  **File aggiornati:** lista file docs/ e .cursor/rules/ aggiornati
+  ```
+
+---
+
+## MAPPA AREE → FILE
+
+| Area modificata | docs/project/ | .cursor/rules/ |
+|---|---|---|
+| Architettura generale | `000-architecture.md` | `000-project-overview.mdc` |
+| Stack e configurazione | `001-tech-stack.md` | `001-tech-stack.mdc` |
+| Collections PayloadCMS | `010-collections.md` | `010-payloadcms-collections.mdc` |
+| Worker pattern | `020-workers.md` | `020-worker-patterns.mdc` |
+| Furious API | `030-furious-api.md` | `030-furious-api.mdc` |
+| Starty API | `040-starty-api.md` | `040-starty-api.mdc` |
+| Flusso Assenze | `050-absence-flow.md` | `050-absence-flow.mdc` |
+| Flusso Fatture | `060-invoice-flow.md` | `060-invoice-flow.mdc` |
+| Infrastruttura GCP | `070-gcp-infrastructure.md` | `070-gcp-config.mdc` |
+| Test | `080-testing.md` | `080-testing-patterns.mdc` |
+| Sicurezza | `090-security.md` | (integra security-critical.mdc esistente) |
+
+---
+
+## CHECKLIST POST-AZIONE
+
+Prima di rispondere "done" o considerare un task completato, verificare:
+
+- [ ] Il codice compila senza errori TypeScript (`tsc --noEmit`)
+- [ ] Il file `docs/project/[area].md` è stato aggiornato
+- [ ] Il file `.cursor/rules/[area].mdc` è stato aggiornato
+- [ ] Se è stato risolto un errore non banale: voce aggiunta in `DECISIONS.md`
+- [ ] Se è cambiata la struttura delle Collection: `generate:types` eseguito
+- [ ] Se sono stati aggiunti componenti: `generate:importmap` eseguito
+
+---
+
+## PRINCIPIO FONDAMENTALE DI PROGETTO
+
+> Ogni decisione tecnica viene valutata non solo per il caso d'uso immediato
+> ma per quanto facilmente permette di aggiungere nuovi flussi, nuove entità,
+> nuovi sistemi senza modificare il codice esistente.
+
+Questo principio si chiama **estensibilità by design** ed è un vincolo architetturale
+obbligatorio, non una best practice opzionale. Se una soluzione è ottimale per
+il caso corrente ma crea attrito per estensioni future, va scartata.
+
+---
+
+## STRUTTURA DOCUMENTAZIONE ATTESA
+
+```
+.
+├── AGENTS.md                    # Entry point agenti AI — sempre aggiornato
+├── DECISIONS.md                 # Decision log — aggiornato ad ogni decisione
+├── README.md                    # Entry point sviluppatori umani
+├── docs/
+│   └── project/
+│       ├── 000-architecture.md
+│       ├── 001-tech-stack.md
+│       ├── 010-collections.md
+│       ├── 020-workers.md
+│       ├── 030-furious-api.md
+│       ├── 040-starty-api.md
+│       ├── 050-absence-flow.md
+│       ├── 060-invoice-flow.md
+│       ├── 070-gcp-infrastructure.md
+│       ├── 080-testing.md
+│       └── 090-security.md
+└── .cursor/
+    └── rules/
+        ├── 000-project-overview.mdc    # Contesto generale progetto
+        ├── 001-documentation-policy.mdc  # QUESTO FILE
+        ├── 001-tech-stack.mdc
+        ├── 010-payloadcms-collections.mdc
+        ├── 020-worker-patterns.mdc
+        ├── 030-furious-api.mdc
+        ├── 040-starty-api.mdc
+        ├── 050-absence-flow.mdc
+        ├── 060-invoice-flow.mdc
+        ├── 070-gcp-config.mdc
+        ├── 080-testing-patterns.mdc
+        └── [file esistenti PayloadCMS generici]
+```
