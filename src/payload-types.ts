@@ -315,7 +315,7 @@ export interface User {
   /**
    * Ruolo operativo. Determina le aree visibili e le azioni permesse.
    */
-  role: 'admin' | 'hr' | 'amministrazione';
+  role: 'admin' | 'hr' | 'amministrazione' | 'sistema';
   /**
    * Stato account. Gli utenti sospesi non possono accedere.
    */

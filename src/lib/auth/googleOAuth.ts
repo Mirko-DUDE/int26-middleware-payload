@@ -118,9 +118,7 @@ export const googleOAuthPlugin = OAuth2Plugin({
       }
 
       req.payload.logger.info({ email }, 'Bootstrap admin creato al primo avvio')
-      // Restituisce anche role e status per evitare che il plugin sovrascriva
-      // il record con un update che azzera i campi required non presenti in userInfo.
-      return { email, sub, role: 'admin', status: 'active' }
+      return { email, sub }
     }
 
     // ── Caso B: DB non vuoto — regime normale (closed by default) ─────────────
@@ -146,17 +144,16 @@ export const googleOAuthPlugin = OAuth2Plugin({
           } as any,
           overrideAccess: true,
         })
-        return { email, sub, role: 'admin', status: 'active' }
+        return { email, sub }
       }
 
       // Tutti gli altri: accesso negato anche se hanno mail aziendale valida
       throw new Error('Accesso non autorizzato. Richiedere un invito a un amministratore.')
     }
 
-    // Restituisce anche role e status dell'utente esistente per evitare che il plugin
-    // sovrascriva il record con un update che azzera i campi required non presenti in userInfo.
-    const existingDoc = existingUser.docs[0] as { role?: string; status?: string }
-    return { email, sub, role: existingDoc.role, status: existingDoc.status }
+    // Restituisce solo email e sub — role e status vengono preservati
+    // dal beforeChange hook in Users.ts che li copia dall'originalDoc.
+    return { email, sub }
   },
 
   successRedirect: (_req: PayloadRequest) => {

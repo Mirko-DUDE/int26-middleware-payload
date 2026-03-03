@@ -1,19 +1,14 @@
-'use client'
-
 /**
  * Pulsante di login Google OAuth2 per la pagina /admin/login.
  *
+ * Server Component (no 'use client'): renderizzato nell'HTML iniziale,
+ * appare immediatamente senza attendere l'idratazione React.
+ *
  * Registrato in payload.config.ts sotto admin.components.beforeLogin.
- * Reindirizza verso l'endpoint OAuth2 configurato in googleOAuth.ts
- * (authorizePath: '/oauth/google' → endpoint Payload: /api/oauth/google).
+ * Il plugin payload-oauth2 registra gli endpoint sulla collection:
+ * /api/{authCollection}{authorizePath} → /api/users/oauth/google
  */
 export default function GoogleLoginButton() {
-  const handleGoogleLogin = () => {
-    // Il plugin payload-oauth2 registra gli endpoint sulla collection users:
-    // /api/{authCollection}{authorizePath} → /api/users/oauth/google
-    window.location.href = '/api/users/oauth/google'
-  }
-
   return (
     <div
       style={{
@@ -25,9 +20,8 @@ export default function GoogleLoginButton() {
         width: '100%',
       }}
     >
-      <button
-        type="button"
-        onClick={handleGoogleLogin}
+      <a
+        href="/api/users/oauth/google"
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -43,20 +37,13 @@ export default function GoogleLoginButton() {
           fontWeight: 500,
           fontFamily: 'inherit',
           cursor: 'pointer',
-          transition: 'background-color 0.2s, box-shadow 0.2s',
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.backgroundColor = '#f8f9fa'
-          e.currentTarget.style.boxShadow = '0 1px 3px rgba(0,0,0,0.12)'
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.backgroundColor = '#ffffff'
-          e.currentTarget.style.boxShadow = 'none'
+          textDecoration: 'none',
+          boxSizing: 'border-box',
         }}
       >
         <GoogleIcon />
         Accedi con Google
-      </button>
+      </a>
 
       <div
         style={{

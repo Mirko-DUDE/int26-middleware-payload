@@ -241,6 +241,71 @@ insieme e che il conteggio utenti sia coerente con lo stato del sistema.
 
 ---
 
+## [2026-03-03] — role 'sistema' mancante dalle options causa validation error al bootstrap
+
+**Problema:**
+Al primo login (DB vuoto) il bootstrap falliva con `"The following field is invalid: Role"`.
+Il `beforeChange` hook non veniva nemmeno chiamato — l'errore avveniva durante
+`payload.create()` del service account `sistema` dentro `getUserInfo()`.
+
+**Causa:**
+Il campo `role` aveva nelle `options` solo `['admin', 'hr', 'amministrazione']`.
+Il service account viene creato con `role: 'sistema'` — valore non presente nelle options.
+PayloadCMS valida i campi select contro le options anche con `overrideAccess: true`,
+quindi la `create` falliva con errore di validazione.
+
+**Soluzione:**
+Aggiunto `{ label: 'Sistema (Service Account)', value: 'sistema' }` alle options del
+campo `role`. Il valore è tecnicamente selezionabile dall'UI admin, ma nella pratica
+nessun admin crea service account manualmente — è un'operazione riservata al bootstrap.
+
+**File aggiornati:**
+- `src/collections/Users.ts` — aggiunto `'sistema'` alle options del campo `role`
+
+---
+
+## [2026-03-03] — beforeChange hook preserva role/status negli update parziali del plugin OAuth2
+
+**Problema:**
+Dopo le modifiche precedenti (getUserInfo restituisce role e status), il primo login
+continuava a fallire con `"The following field is invalid: Role"`. Il messaggio è
+un errore di validazione PayloadCMS (`followingFieldsInvalid`) — il campo `role`
+(label "Role") non superava la validazione durante l'update fatto dal plugin.
+
+**Causa:**
+Il plugin `payload-oauth2` fa `payload.update(user.id, data: userInfo)` senza
+`overrideAccess: true`. Passare `role` e `status` in `userInfo` non risolve il problema
+perché PayloadCMS filtra o trasforma i valori prima della validazione in modi non
+prevedibili senza modificare il plugin.
+
+**Soluzione definitiva:**
+Aggiunto un `beforeChange` hook nella collection `Users` che preserva `role` e `status`
+dall'`originalDoc` se non presenti nel payload dell'update:
+
+```typescript
+beforeChange: [
+  async ({ data, operation, originalDoc }) => {
+    if (operation === 'update' && originalDoc) {
+      if (!data.role) data.role = originalDoc.role
+      if (!data.status) data.status = originalDoc.status
+    }
+    return data
+  },
+],
+```
+
+Questo hook è trasparente per tutti gli altri update (admin UI, worker) perché se
+`data.role` è già presente viene lasciato invariato. Garantisce che un update parziale
+(es. solo `{ email, sub }`) non azzeri mai i campi required.
+
+`getUserInfo()` torna a restituire solo `{ email, sub }` — più semplice e corretto.
+
+**File aggiornati:**
+- `src/collections/Users.ts` — aggiunto `beforeChange` hook
+- `src/lib/auth/googleOAuth.ts` — `getUserInfo()` semplificato, restituisce solo `{ email, sub }`
+
+---
+
 ## [2026-03-03] — getUserInfo() deve restituire role e status per evitare validazione fallita
 
 **Problema:**

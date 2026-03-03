@@ -1,5 +1,5 @@
 # PROJECT_CONTEXT.md
-*Documento di riferimento per agenti AI e sviluppatori — aggiornato al completamento di A4 e A5*
+*Documento di riferimento per agenti AI e sviluppatori — aggiornato al completamento di A1–A5 e setup autenticazione Google OAuth2*
 
 ---
 
@@ -25,7 +25,7 @@ Due flussi di business principali:
 | Error tracking | Sentry | Stack trace, alert, correlazione per task |
 | Secret storage | Secret Manager | Mai env vars per token API |
 | ORM | Drizzle ORM (adapter ufficiale Payload per PG) | |
-| Autenticazione | Google OAuth2 SSO (dominio aziendale) | |
+| Autenticazione | Google OAuth2 SSO via `payload-oauth2` (WilsonLe) | `@payloadcms/plugin-sso` non disponibile per Payload 3.x |
 
 **iPaaS (Make/n8n/Zapier): esclusi definitivamente.**
 **MongoDB: escluso definitivamente.**
@@ -38,6 +38,20 @@ Due flussi di business principali:
 - Tutti i token API (`furious-auth-token`, `starty-jwt-token`, ecc.) vanno **esclusivamente** su Secret Manager, montati come env vars al deploy. Mai hardcodati, mai nel Dockerfile.
 - Gli endpoint worker (`/api/workers/*`) sono protetti da OIDC token di Cloud Tasks. Non accessibili pubblicamente.
 - Webhook Starty verificati con firma HMAC tramite `starty-webhook-secret`.
+
+### Autenticazione (A3 — implementato)
+- Plugin: **`payload-oauth2`** (WilsonLe) — unico compatibile con Payload 3.x al momento dell'implementazione.
+- Endpoint OAuth registrati sulla collection `users`: `/api/users/oauth/google` (authorize) e `/api/users/oauth/google/callback`.
+- Logica closed-by-default implementata in `getUserInfo()` — nessun utente entra senza invito esplicito.
+- Bootstrap admin: al primo avvio (DB vuoto), `BOOTSTRAP_ADMIN_EMAIL` crea automaticamente admin + service account `sistema`.
+- Pulsante login: Server Component `src/components/GoogleLoginButton.tsx` registrato in `admin.components.beforeLogin`.
+- **`GMAIL_DELEGATED_USER` determina il mittente reale delle mail** — deve coincidere con `GMAIL_SENDER_ADDRESS`.
+
+### Vincoli noti sul plugin `payload-oauth2`
+- Il plugin fa sempre `payload.update(user.id, data: getUserInfo())` dopo il login. Se `getUserInfo()` restituisce campi incompleti, PayloadCMS valida e può lanciare errori.
+- **Soluzione adottata:** `beforeChange` hook in `Users` che preserva `role` e `status` dall'`originalDoc` se assenti nel payload dell'update.
+- `overrideAccess: true` bypassa solo il collection-level access, NON il field-level access — i campi `role` e `status` non hanno field-level access per questo motivo.
+- Il valore `'sistema'` deve essere presente nelle `options` del campo `role` per superare la validazione PayloadCMS, anche se il service account viene creato con `overrideAccess: true`.
 
 ### Logging (A4)
 - **Due livelli separati e non intercambiabili:**
@@ -70,16 +84,19 @@ Due flussi di business principali:
 
 ```
 docs/project/
-├── 010-data-schema.md          (A1) Schema collezioni PayloadCMS
-├── 020-security-auth.md        (A2) Autenticazione, permessi, HMAC
-├── 030-queue-workers.md        (A3) Pattern worker, Cloud Tasks, retry
+├── 000-architecture.md
+├── 010-collections.md          (A1) Schema collezioni PayloadCMS
+├── 020-workers.md              (A2/A3) Pattern worker, Cloud Tasks, retry
+├── 030-auth-roles.md           (A3) ✅ Autenticazione, permessi, OAuth2, Gmail API
 ├── 040-logging.md              (A4) ✅ Business audit log, Pino, Sentry, metriche
 └── 050-gcp-infrastructure.md   (A5) ✅ Cloud Run, SQL, Tasks, Secret Manager, ambienti
 
 .cursor/rules/
-├── 010-data-schema.mdc
-├── 020-security.mdc
-├── 030-queue-workers.mdc
+├── 000-project-overview.mdc
+├── 001-documentation-policy.mdc
+├── 010-payloadcms-collections.mdc
+├── 020-worker-patterns.mdc
+├── 030-auth-roles.mdc          (A3) ✅
 ├── 040-logging.mdc             (A4) ✅
 └── 050-gcp-config.mdc          (A5) ✅
 ```
@@ -88,10 +105,10 @@ docs/project/
 
 ## §5. Checklist fasi di progetto
 
-### Sottofase A — Fondamenta (progettazione)
+### Sottofase A — Fondamenta (completata)
 - [x] A1 — Modellazione dati e schema collezioni
 - [x] A2 — Sicurezza, autenticazione, HMAC webhook
-- [x] A3 — Pattern worker, Cloud Tasks, gestione retry
+- [x] A3 — Pattern worker, Cloud Tasks, gestione retry + Google OAuth2 SSO funzionante
 - [x] A4 — Sistema di logging e osservabilità
 - [x] A5 — Infrastruttura GCP — specifiche provisioning
 
@@ -137,3 +154,66 @@ docs/project/
 5. **Non loggare** rawPayload, token, email su Cloud Logging (solo Livello 1 Postgres).
 6. **Seguire** i messaggi standardizzati per le log-based metrics (vedi 040-logging.mdc).
 7. **Usare sempre** Auth Proxy Unix socket per la connessione a Cloud SQL.
+8. **Non aggiungere field-level access** su `role` e `status` in `Users.ts` — causa blocchi silenziosi nel flusso OAuth2 (vedi DECISIONS.md).
+9. **Endpoint OAuth2** sono su `/api/users/oauth/google` (authorize) e `/api/users/oauth/google/callback` — non `/api/oauth/google`.
+10. **`GMAIL_DELEGATED_USER`** deve coincidere con `GMAIL_SENDER_ADDRESS` — Gmail API usa sempre l'account impersonato come mittente reale.
+
+---
+
+## §8. Stato implementativo Sottofase A — file chiave
+
+```
+src/
+├── collections/
+│   ├── Users.ts                    ✅ auth OAuth2, ruoli, stati, beforeChange hook
+│   ├── AutoApprovalRules.ts        ✅ regole auto-approvazione assenze
+│   ├── AbsenceLog.ts               ✅ log assenze con state machine
+│   ├── InvoicePendingReview.ts     ✅ stub R2
+│   └── InvoiceLog.ts               ✅ stub R2
+├── collections/hooks/
+│   ├── sendInviteEmailHook.ts      ✅ mail invito via Gmail API
+│   └── afterLoginHook.ts           ✅ promozione invited→active
+├── access/
+│   ├── permissions.ts              ✅ canRead/canWrite Pattern Adapter
+│   └── helpers.ts                  ✅ isAdmin, isHR, isAmministrazione, isSistema, isActive
+├── lib/
+│   ├── auth/googleOAuth.ts         ✅ plugin OAuth2 + bootstrap + closed-by-default
+│   ├── furious/auth.ts             ✅ getFuriousToken() con cache + Secret Manager
+│   ├── furious/api.ts              ✅ approveAbsence(), getAbsence() con retry 401
+│   ├── gcp/tasks.ts                ✅ enqueueAbsenceTask(), enqueueInvoiceTask()
+│   ├── gcp/secrets.ts              ✅ getSecret(), setSecret()
+│   ├── monitoring/index.ts         ✅ captureError(), captureMessage() wrapper Sentry
+│   └── logger.ts                   ✅ singleton Pino
+├── workers/
+│   ├── types.ts                    ✅ WorkerFn, WorkerResult, WorkerTaskPayload
+│   └── absence/processAbsence.ts  ✅ worker auto-approvazione assenze
+├── services/
+│   └── mailer.ts                   ✅ Gmail API domain-wide delegation
+├── components/
+│   └── GoogleLoginButton.tsx       ✅ Server Component pulsante login Google
+└── hooks/
+    └── setProcessedAtOnTerminalStatus.ts  ✅ hook beforeChange per stati terminali
+```
+
+**Variabili d'ambiente richieste (tutte presenti in `.env.example`):**
+
+| Variabile | Scope |
+|---|---|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `PAYLOAD_SECRET` | JWT signing secret |
+| `SERVER_URL` | URL pubblico del server |
+| `GOOGLE_CLIENT_ID` | OAuth2 app Google |
+| `GOOGLE_CLIENT_SECRET` | OAuth2 secret |
+| `ALLOWED_EMAIL_DOMAIN` | Es. `dude.it` |
+| `BOOTSTRAP_ADMIN_EMAIL` | Email primo admin |
+| `SISTEMA_EMAIL` | Email service account |
+| `GMAIL_DELEGATED_USER` | Account impersonato Gmail API (= `GMAIL_SENDER_ADDRESS`) |
+| `GMAIL_SENDER_ADDRESS` | Mittente mail inviti (= `GMAIL_DELEGATED_USER`) |
+| `GOOGLE_SERVICE_ACCOUNT_KEY_JSON` | Chiave JSON Service Account GCP |
+| `GCP_PROJECT_ID` | ID progetto GCP |
+| `CLOUD_TASKS_QUEUE_ABSENCES` | Nome coda Cloud Tasks assenze |
+| `CLOUD_TASKS_QUEUE_INVOICES` | Nome coda Cloud Tasks fatture |
+| `CLOUD_TASKS_LOCATION` | Regione Cloud Tasks |
+| `FURIOUS_EMAIL` | Credenziali Furious API |
+| `FURIOUS_PASSWORD` | Credenziali Furious API |
+| `SENTRY_DSN` | DSN Sentry (opzionale in locale) |

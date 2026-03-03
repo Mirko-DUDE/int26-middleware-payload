@@ -357,6 +357,23 @@ Quando un admin crea un nuovo utente dalla UI di Payload, il sistema invia autom
 
 L'azienda dispone di Google Workspace Enterprise. Le mail vengono inviate tramite **Gmail API** usando un Service Account GCP con **domain-wide delegation** configurata su Google Workspace Admin Console. Il mittente è `noreply@azienda.it` — un indirizzo reale del dominio aziendale.
 
+> **⚠️ Comportamento critico — mittente reale = account impersonato:**
+> Gmail API con domain-wide delegation **ignora il campo `From` nell'header RFC 2822**
+> e usa sempre come mittente reale l'account specificato in `GMAIL_DELEGATED_USER`.
+> Il campo `GMAIL_SENDER_ADDRESS` nell'header è visivamente coerente ma non determina
+> chi appare come mittente nella casella del destinatario.
+>
+> **Regola operativa:** `GMAIL_DELEGATED_USER` e `GMAIL_SENDER_ADDRESS` devono essere
+> lo stesso indirizzo — tipicamente `noreply@azienda.it`:
+>
+> ```env
+> GMAIL_DELEGATED_USER=noreply@azienda.it   # account impersonato dal Service Account
+> GMAIL_SENDER_ADDRESS=noreply@azienda.it   # deve coincidere con GMAIL_DELEGATED_USER
+> ```
+>
+> Se i due valori differiscono, le mail arrivano con mittente `GMAIL_DELEGATED_USER`
+> indipendentemente da quanto impostato in `GMAIL_SENDER_ADDRESS`.
+
 Vantaggi rispetto a servizi esterni (SendGrid, Resend):
 
 - **Costo zero** — incluso nella licenza Workspace Enterprise già posseduta
