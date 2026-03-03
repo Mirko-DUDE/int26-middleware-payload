@@ -45,16 +45,12 @@
 - `src/collections/` ha solo `Users.ts` e `Media.ts` — tutto da costruire
 - `AGENTS.md` presente con regole PayloadCMS complete
 
-### Cosa deve essere fatto ora
-
-**TASK CORRENTE: Sottofase A — Parte Comune**
-
-Da completare in ordine, prima di qualsiasi cosa specifica al flusso assenze:
+### Avanzamento Sottofase A
 
 - [x] **A1 — Schema dati PayloadCMS** ✓ completato
 - [x] **A2 — Architettura dei Worker** ✓ completato
-- [ ] **A3 — Sistema autenticazione e ruoli** ← PROSSIMO
-- [ ] **A4 — Sistema logging e osservabilità**
+- [x] **A3 — Sistema autenticazione e ruoli** ✓ completato
+- [ ] **A4 — Sistema logging e osservabilità** ← PROSSIMO
 - [ ] **A5 — Infrastruttura GCP — specifiche**
 
 Solo dopo A1-A5 si passa a:
@@ -84,9 +80,10 @@ per il caso corrente ma crea attrito per estensioni future, va scartata.
 | ORM | Drizzle (incluso in Payload) | Già configurato nel repo |
 | Queue | Google Cloud Tasks | Serverless, no Redis da gestire, retry automatico |
 | Hosting | Google Cloud Run | Scalabilità automatica, pay-per-use |
-| Secrets | Google Secret Manager | Token API, HMAC secrets — mai in env vars |
+| Secrets | Google Secret Manager | Token API, HMAC secrets, JWT sistema — mai in env vars |
 | Logging | Cloud Logging + Sentry | System logs + error tracking |
-| Auth utenti | Google SSO (OAuth2) | Accesso solo utenti dominio aziendale |
+| Auth utenti | Google SSO (OAuth2) | Accesso solo utenti dominio aziendale — closed by default |
+| Email transazionali | Gmail API (Workspace Enterprise) | Inviti utenti — zero costi aggiuntivi, deliverability massima |
 
 ### Agente AI principale per Cursor
 - **Claude Sonnet 4.6** — agente principale (veloce, economico, qualità alta su task ben specificati)
@@ -119,13 +116,15 @@ access: {
 }
 ```
 
+`canRead` e `canWrite` controllano trasversalmente anche `status === 'suspended'` — un utente sospeso non può operare anche se ha un JWT ancora valido.
+
 **Livello 1 (attuale):** permessi come oggetto TypeScript statico in `permissions.ts`.
 Modificare i permessi = modifica al codice + deploy.
 
-**Livello 2 (futuro — debito tecnico):** riscrivere solo `permissions.ts` per leggere
+**Livello 2 (futuro — debito tecnico DT-AUTH-001):** riscrivere solo `permissions.ts` per leggere
 da una Collection PayloadCMS (`PermissionRules`). Zero modifiche alle Collection.
 Trigger consigliato: quando un admin non-tecnico necessita di modificare i permessi
-più di una volta al mese. Voce registrata in `DECISIONS.md`.
+più di una volta al mese.
 
 ### Groups UI Admin — DEFINITIVI
 
@@ -144,7 +143,6 @@ Ogni Collection ha `admin.group` impostato. Struttura sidebar Admin UI:
 Ogni tipologia di media ha una Collection dedicata con bucket GCS proprio.
 Plugin: `@payloadcms/storage-gcs` configurato per-collection in `payload.config.ts`.
 Il bucket viene **sempre** letto da env vars — mai hardcoded nel codice.
-Aggiungere una tipologia = aggiungere Collection slug + env var + voce in `gcsStorage`.
 
 ### Interfaccia standard Worker — DEFINITIVA (A2)
 
@@ -214,7 +212,7 @@ I worker usano `ctx.logger` (mai `console.log` diretto). Il logger è un child P
 `taskId` e `taskType` come campi fissi, serializzato in JSON con campo `severity`
 per compatibilità Cloud Logging.
 
-Nomi degli eventi standardizzati (usare questi esatti, non inventarne altri):
+Nomi degli eventi standardizzati:
 
 | Livello | Evento |
 |---------|--------|
@@ -284,7 +282,7 @@ Regole per agenti in `.cursor/rules/010-payloadcms-collections.mdc`.
 
 | Collection | File | Group UI | Release | Stato |
 |-----------|------|----------|---------|-------|
-| `Users` | `Users.ts` | `Sistema` | esistente | estendere con `role` |
+| `Users` | `Users.ts` | `Sistema` | esistente | estendere con `role` + `status` |
 | `Media` | `Media.ts` | `Media` | esistente | non toccare |
 | `AutoApprovalRules` | `AutoApprovalRules.ts` | `Assenze` | R1 | ← creare |
 | `AbsenceLog` | `AbsenceLog.ts` | `Assenze` | R1 | ← creare |
@@ -299,8 +297,7 @@ Regole per agenti in `.cursor/rules/010-payloadcms-collections.mdc`.
 - Il `status` è una state machine esplicita (non testo libero). Hook `beforeChange`
   imposta `processedAt` automaticamente alla transizione verso uno stato terminale.
 - `delete: () => false` su tutte le Collection di log — audit trail non cancellabile.
-- `AutoApprovalRules` ha campo `flowType` per riutilizzo su flussi futuri (non solo assenze).
-- Il sistema permessi usa Pattern Adapter: vedi §3 e `src/access/permissions.ts`.
+- `AutoApprovalRules` ha campo `flowType` per riutilizzo su flussi futuri.
 - Indici su tutti i campi in `where`/`orderBy`: `pseudo`, `status`, `furiousAbsenceId`, `createdAt`.
 
 ### State machine AbsenceLog
@@ -311,30 +308,80 @@ received → processing → approved         (pseudo in AutoApprovalRules, PUT F
                      → failed_permanent  (5 tentativi o errore non-retriable)
 ```
 
-### Estensione Users
-
-Aggiungere campo `role` con `saveToJWT: true`. Valori: `admin` | `hr` |
-`amministrazione` | `sistema`. Il ruolo è nel JWT — nessun lookup DB per ogni richiesta.
-
-### Media GCS multi-bucket (progettato, implementare a richiesta)
-
-Ogni tipologia di media = Collection dedicata + bucket GCS da env var.
-Plugin `@payloadcms/storage-gcs` per-collection in `payload.config.ts`.
-Tutte le Collection media usano `admin.group: 'Media'`.
-
 ---
 
-## 7. Ruoli utente — da implementare in A3
+## 7. Sistema autenticazione e ruoli — A3 completato
+
+Documentazione completa in `docs/project/030-auth-roles.md`.
+Regole per agenti in `.cursor/rules/030-auth-roles.mdc`.
+
+### Modello di accesso: closed by default
+
+Il dominio aziendale ha più di cento utenti. L'accesso è **invite-based**: nessun utente
+può autenticarsi autonomamente anche con mail aziendale valida. L'admin crea il record
+utente con ruolo assegnato, il sistema invia l'invito via Gmail API, l'utente accede
+tramite Google SSO.
+
+### I quattro ruoli
 
 | Ruolo | Descrizione | Accesso |
 |-------|-------------|---------|
-| `admin` | Amministratore sistema | Tutto, incluse AutoApprovalRules |
-| `hr` | HR aziendale | AbsenceLog (read only) |
+| `admin` | Amministratore sistema | Tutto, incluse AutoApprovalRules e gestione utenti |
+| `hr` | HR aziendale | AbsenceLog (read/write per approvazione) |
 | `amministrazione` | Ufficio amministrativo | InvoicePendingReview (read/write), InvoiceLog (read) |
-| `sistema` | Service account worker | Scrittura log, nessuna UI |
+| `sistema` | Service account worker | Scrittura log e record operativi, nessuna UI |
 
-Autenticazione: Google SSO con OAuth2 — accesso solo utenti dominio aziendale.
-I ruoli si salvano nel JWT (`saveToJWT: true`) per evitare lookup DB ad ogni richiesta.
+### I tre stati utente
+
+| Status | Significato | Accesso |
+|--------|-------------|---------|
+| `invited` | Invitato dall'admin, primo login non ancora effettuato | ✅ (al login diventa `active`) |
+| `active` | Utente operativo | ✅ |
+| `suspended` | Accesso revocato — dati e audit trail preservati | ❌ |
+
+### Regole JWT — DEFINITIVE
+
+- `role` e `status` hanno entrambi `saveToJWT: true` — zero DB lookup per ogni richiesta
+- Il ruolo `sistema` non appare nelle options UI del campo `role` — creato via `onInit`
+- La sospensione è effettiva a tre livelli: blocco al login in `findOrCreateUser()`,
+  scadenza naturale del JWT, controllo trasversale in `canRead`/`canWrite`
+
+### Bootstrap admin
+
+L'unico admin che non richiede invito è definito da `BOOTSTRAP_ADMIN_EMAIL` (env var).
+Al primo login viene creato/promosso automaticamente. Non fa mai downgrade:
+rimuovere la variabile env non altera il ruolo già nel DB.
+Tutti gli admin successivi vengono promossi da un admin esistente via UI Payload.
+
+### Service account `sistema`
+
+Creato automaticamente all'avvio via hook `onInit` se non esiste.
+Si autentica verso PayloadCMS tramite JWT (non Google SSO).
+Il JWT è generato da `src/scripts/generate-sistema-jwt.ts` e conservato in GCP Secret Manager.
+Gli endpoint interni `/internal/*` verificano `isSistema(req.user)` come prima operazione.
+
+### Invio mail via Gmail API
+
+Le mail di invito sono inviate tramite **Gmail API** con domain-wide delegation.
+Mittente: `noreply@dominio-azienda` (indirizzo reale Workspace).
+Costo: zero — incluso nella licenza Workspace Enterprise.
+Prerequisito operativo: configurazione domain-wide delegation richiede Super Admin Workspace.
+
+### Variabili d'ambiente auth (tutte richieste)
+
+| Variabile | Scope |
+|-----------|-------|
+| `GOOGLE_CLIENT_ID` | Runtime |
+| `GOOGLE_CLIENT_SECRET` | Secret Manager |
+| `PAYLOAD_PUBLIC_SERVER_URL` | Runtime |
+| `ALLOWED_EMAIL_DOMAIN` | Runtime |
+| `BOOTSTRAP_ADMIN_EMAIL` | Runtime |
+| `SISTEMA_EMAIL` | Runtime |
+| `SISTEMA_JWT` | Secret Manager |
+| `PAYLOAD_INTERNAL_URL` | Runtime |
+| `GMAIL_SENDER_ADDRESS` | Runtime |
+| `GMAIL_DELEGATED_USER` | Runtime |
+| `GOOGLE_SERVICE_ACCOUNT_KEY_JSON` | Secret Manager |
 
 ---
 
@@ -374,14 +421,19 @@ src/
 │   ├── (frontend)/          # UI operatori
 │   └── (payload)/           # Admin PayloadCMS (già presente)
 ├── collections/
-│   ├── Users.ts             # ← ESTENDERE con campo role
+│   ├── Users.ts             # ← ESTENDERE con campo role + status (A3)
 │   ├── Media.ts             # ← NON TOCCARE
 │   ├── AutoApprovalRules.ts # ← CREARE [R1]
 │   ├── AbsenceLog.ts        # ← CREARE [R1]
 │   ├── InvoicePendingReview.ts # ← PROGETTARE [R2]
 │   └── InvoiceLog.ts        # ← PROGETTARE [R2]
+│   └── hooks/
+│       └── sendInviteEmailHook.ts  # ← CREARE (A3) — invio mail invito
 ├── access/
-│   └── permissions.ts       # ← CREARE — unica fonte di verità permessi
+│   ├── permissions.ts       # ← CREARE (A3) — unica fonte di verità permessi
+│   └── helpers.ts           # ← CREARE (A3) — isAdmin, isHR, isAmministrazione, isSistema, isActive
+├── services/
+│   └── mailer.ts            # ← CREARE (A3) — Gmail API con domain-wide delegation
 ├── hooks/
 │   └── setProcessedAtOnTerminalStatus.ts  # ← CREARE [R1] — hook audit log
 ├── workers/
@@ -392,32 +444,33 @@ src/
 │   └── invoice/
 │       └── processInvoice.ts    # [R2]
 ├── endpoints/
-│   └── workers/
-│       ├── absence.ts       # endpoint HTTP worker → verifyCloudTasksRequest + runWorker
-│       └── invoice.ts
+│   ├── workers/
+│   │   ├── absence.ts       # endpoint HTTP worker → verifyCloudTasksRequest + runWorker
+│   │   └── invoice.ts
+│   └── internal/            # ← endpoint protetti da isSistema() — chiamati da worker
 ├── webhooks/
 │   ├── furious/
-│   │   └── absence.ts           # endpoint ricezione [R1]
+│   │   └── absence.ts       # endpoint ricezione [R1]
 │   └── starty/
-│       └── invoice.ts           # endpoint ricezione [R2]
+│       └── invoice.ts       # endpoint ricezione [R2]
 ├── lib/
 │   ├── furious/
-│   │   ├── auth.ts              # getFuriousToken() — wrappa tokenManager
-│   │   └── api.ts               # chiamate API tipizzate
+│   │   ├── auth.ts          # getFuriousToken() — wrappa tokenManager
+│   │   └── api.ts           # chiamate API tipizzate
 │   ├── starty/
-│   │   ├── auth.ts              # getStartyToken()
+│   │   ├── auth.ts          # getStartyToken()
 │   │   └── api.ts
 │   ├── gcp/
-│   │   ├── tasks.ts             # enqueueTask() generico
-│   │   └── secrets.ts           # getSecret(), setSecret()
-│   ├── tokenManager.ts          # getToken(), invalidateToken() — cache + Secret Manager
-│   ├── apiClient.ts             # callWithToken<T>() — wrapper con retry su 401
-│   ├── logger.ts                # createWorkerLogger() — Pino child con taskId/taskType
-│   ├── taskLogs.ts              # updateTaskStatus() — aggiorna record TaskLogs in Payload
-│   ├── cloudTasks.ts            # verifyCloudTasksRequest(), enqueueTask()
+│   │   ├── tasks.ts         # enqueueTask() generico
+│   │   └── secrets.ts       # getSecret(), setSecret()
+│   ├── tokenManager.ts      # getToken(), invalidateToken() — cache + Secret Manager
+│   ├── apiClient.ts         # callWithToken<T>() — wrapper con retry su 401
+│   ├── logger.ts            # createWorkerLogger() — Pino child con taskId/taskType
+│   ├── taskLogs.ts          # updateTaskStatus() — aggiorna record TaskLogs in Payload
+│   ├── cloudTasks.ts        # verifyCloudTasksRequest(), enqueueTask()
 │   └── hmac/
-│       └── verify.ts            # verifyWebhookSignature() generico
-└── payload.config.ts            # ← DA AGGIORNARE con nuove collection
+│       └── verify.ts        # verifyWebhookSignature() generico
+└── payload.config.ts        # ← DA AGGIORNARE con nuove collection e onInit hook
 ```
 
 ---
@@ -453,8 +506,7 @@ Dopo ogni modifica a codice, architettura o configurazione, l'agente DEVE:
 | Tech stack | `001-tech-stack.md` | `001-tech-stack.mdc` |
 | Collections | `010-collections.md` | `010-payloadcms-collections.mdc` |
 | Workers | `020-workers.md` | `020-worker-patterns.mdc` |
-| Furious API | `030-furious-api.md` | `030-furious-api.mdc` |
-| Starty API | `040-starty-api.md` | `040-starty-api.mdc` |
+| Auth & Ruoli | `030-auth-roles.md` | `030-auth-roles.mdc` |
 | Flusso Assenze | `050-absence-flow.md` | `050-absence-flow.mdc` |
 | Flusso Fatture | `060-invoice-flow.md` | `060-invoice-flow.mdc` |
 | GCP | `070-gcp-infrastructure.md` | `070-gcp-config.mdc` |
@@ -484,43 +536,54 @@ AGENTS.md                      # regole PayloadCMS complete — non sovrascriver
 
 ---
 
-## 13. Task corrente — A3: Sistema autenticazione e ruoli
+## 13. Debiti tecnici aperti
 
-### Obiettivo
-Progettare e documentare il sistema di autenticazione degli utenti (Google SSO) e il
-sistema di controllo degli accessi per ruolo (RBAC). Definire come i ruoli si propagano
-nel JWT, come `permissions.ts` espone le funzioni `canRead`/`canWrite`, e come il
-service account del worker si autentica verso PayloadCMS per scrivere i log.
-
-### Da produrre
-1. `docs/project/030-auth-roles.md` — documentazione narrativa per sviluppatori (italiano)
-2. `.cursor/rules/030-auth-roles.mdc` — regole e pattern TypeScript per agenti AI
-
-### Il documento deve coprire
-- Configurazione Google OAuth2 in PayloadCMS: plugin da usare, variabili d'ambiente necessarie
-- Restrizione dominio aziendale: come impedire login a utenti fuori dal dominio
-- Struttura di `src/access/permissions.ts`: come definire `canRead`/`canWrite` per ruolo
-- Campo `role` su `Users`: tipo, valori, `saveToJWT: true`, come PayloadCMS lo propaga
-- Service account `sistema`: come il worker scrive su PayloadCMS senza UI (API key o JWT)
-- Pattern di test per accesso: come verificare che un ruolo non acceda a risorse non autorizzate
-
-### Vincoli da rispettare (già decisi)
-- Il ruolo è nel JWT — mai lookup DB per ogni richiesta
-- `permissions.ts` è l'unica fonte di verità — nessuna logica di accesso inline nelle Collection
-- I valori del ruolo sono: `admin` | `hr` | `amministrazione` | `sistema`
-- Il service account worker non usa Google SSO: usa una strategia separata (API key o JWT interno)
+| ID | Area | Descrizione | Trigger migrazione |
+|----|------|-------------|-------------------|
+| DT-AUTH-001 | Permessi | Permessi statici hardcoded in `permissions.ts` | Permessi per-progetto o config da UI admin non tecnici |
+| DT-AUTH-002 | Auth | JWT sistema a lunga scadenza | Migrazione a Workload Identity Federation |
+| DT-AUTH-003 | UX | Reinvio invito manuale (update record) | Aggiungere Custom Action Payload sulla collection Users |
 
 ---
 
-## 14. Come mantenere questo documento aggiornato
+## 14. Task corrente — A4: Sistema logging e osservabilità
+
+### Obiettivo
+Definire l'architettura completa di logging: come i worker scrivono i log di business
+su PostgreSQL (Collection `WebhookLogs`), come i log di sistema vengono inviati a
+Cloud Logging, e come Sentry cattura gli errori non gestiti.
+
+### Da produrre
+1. `docs/project/040-logging.md` — documentazione narrativa per sviluppatori (italiano)
+2. `.cursor/rules/040-logging.mdc` — regole e pattern TypeScript per agenti AI
+
+### Il documento deve coprire
+- Separazione log di business (PostgreSQL) vs log di sistema (Cloud Logging)
+- Schema Collection `WebhookLogs` e state machine degli stati
+- Configurazione Pino per Cloud Logging (campo `severity`, formato JSON)
+- Configurazione Sentry SDK in PayloadCMS/Next.js
+- Pattern `createWorkerLogger()` — child logger con `taskId` e `taskType` fissi
+- Pattern `updateTaskStatus()` — aggiornamento record nel DB da worker
+- Come distinguere errori retriable da non-retriable nel log
+
+### Vincoli da rispettare (già decisi)
+- Mai `console.log` diretto nei worker — sempre `ctx.logger`
+- Log di business su Postgres (visibili in UI admin), log di sistema su Cloud Logging
+- Sentry per error tracking — non duplicare su Cloud Error Reporting
+- Nomi eventi standardizzati: `worker_started`, `worker_completed`, `external_api_called`,
+  `worker_failed_retriable`, `worker_failed_non_retriable`, `worker_dead`, `token_fetch_error`
+
+---
+
+## 15. Come mantenere questo documento aggiornato
 
 Questo file è la fonte di verità del progetto. Va aggiornato ogni volta che:
 
 - Cambia lo stato di avanzamento (aggiornare le checkbox in §2)
 - Si prende una decisione architetturale che non era prevista (aggiungere in §3)
-- Si completa una sottofase A o B (aggiornare §2 e §13 con il task successivo)
+- Si completa una sottofase A o B (aggiornare §2 e §14 con il task successivo)
 - Si ricevono risposte dall'amministrazione sul flusso fatture (aggiornare §5)
-- Cambia un pattern tecnico (worker, auth, error handling — aggiornare §4-§8)
+- Cambia un pattern tecnico (worker, auth, error handling — aggiornare §3-§8)
 
 **Non duplicare** informazioni già nei file `.cursor/rules/` o `docs/project/` —
 questo documento dà il contesto e punta agli altri file per i dettagli.

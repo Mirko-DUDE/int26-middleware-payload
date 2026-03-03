@@ -1,0 +1,392 @@
+---
+description: Regole e pattern per autenticazione Google SSO, invite-based provisioning, access control basato su ruoli e stato utente, e invio mail via Gmail API. Applicare quando si lavora su auth, permessi, collection Users, sistema di invito, worker, o qualsiasi file in src/access/ e src/services/.
+globs:
+  - src/access/**/*.ts
+  - src/collections/**/*.ts
+  - src/collections/hooks/**/*.ts
+  - src/services/mailer.ts
+  - src/workers/**/*.ts
+  - src/endpoints/internal/**/*.ts
+  - src/scripts/*.ts
+  - payload.config.ts
+alwaysApply: false
+---
+
+# 030 — Auth & Roles: Regole per Cursor
+
+## DECISIONI ARCHITETTURALI FISSE (non modificare senza approvazione esplicita)
+
+- Auth utenti: **solo Google SSO OAuth2** — `disableLocalStrategy: true` nella collection Users
+- Accesso consentito: **solo email @[ALLOWED_EMAIL_DOMAIN]** — controllo in `userinfo()`
+- Provisioning: **closed by default** — nessun utente entra senza invito esplicito dall'admin
+- Ruoli e status nel JWT: **`saveToJWT: true`** su `role` e `status` — zero DB lookup per ogni request
+- Ruoli ortogonali: `hr` e `amministrazione` hanno **domini separati**, non gerarchici
+- Pattern Adapter: interfaccia `canRead`/`canWrite` **stabile** — implementazione sostituibile
+- `overrideAccess: true`: **solo nei worker** (`src/workers/`) — mai nelle collection o hook utente
+- Email di invito: **Gmail API** con domain-wide delegation — nessun servizio esterno (SendGrid, Resend)
+
+---
+
+## STRUTTURA FILE OBBLIGATORIA
+
+```
+src/
+  access/
+    permissions.ts          ← registro centrale (canRead, canWrite, PermissionProvider)
+    helpers.ts              ← predicati puri (isAdmin, isHR, isAmministrazione, isSistema, isActive)
+  collections/
+    Users.ts                ← disableLocalStrategy, role + status con saveToJWT
+    hooks/
+      sendInviteEmailHook.ts ← afterChange hook per invio mail di invito
+  services/
+    mailer.ts               ← Gmail API con domain-wide delegation
+  workers/
+    *.ts                    ← overrideAccess: true obbligatorio
+  endpoints/
+    internal/               ← proteggere con isSistema(req.user)
+  scripts/
+    generate-sistema-jwt.ts ← genera JWT service account da salvare in Secret Manager
+```
+
+---
+
+## TIPI FONDAMENTALI
+
+```typescript
+// src/access/permissions.ts
+
+export type Resource =
+  | 'absenceRequests'
+  | 'invoiceMappings'
+  | 'webhookLogs'
+  | 'users'
+  | 'systemLogs'
+
+export type UserRole = 'admin' | 'hr' | 'amministrazione' | 'sistema'
+
+// src/collections/Users.ts — valori del campo status
+type UserStatus = 'invited' | 'active' | 'suspended'
+```
+
+**Regola:** Quando si aggiunge una nuova Collection, aggiungere il suo slug a `Resource` in `permissions.ts` e aggiornare le mappe `READ_PERMISSIONS` / `WRITE_PERMISSIONS`. Non creare logica di permesso altrove.
+
+---
+
+## PATTERN: findOrCreateUser — closed by default
+
+```typescript
+// ✅ CORRETTO — gatekeeper completo
+async findOrCreateUser({ email, name }) {
+  const bootstrapAdminEmail = process.env.BOOTSTRAP_ADMIN_EMAIL
+  const isBootstrapAdmin = email === bootstrapAdminEmail
+
+  const existingUser = await payload.find({
+    collection: 'users',
+    where: { email: { equals: email } },
+  })
+
+  if (existingUser.docs.length > 0) {
+    const user = existingUser.docs[0]
+
+    // Blocca sospesi — JWT non viene emesso
+    if (user.status === 'suspended') {
+      throw new Error('Account sospeso. Contattare un amministratore.')
+    }
+
+    // Bootstrap admin: promuove se necessario, mai downgrade
+    if (isBootstrapAdmin && user.role !== 'admin') {
+      return await payload.update({
+        collection: 'users',
+        id: user.id,
+        data: { role: 'admin', status: 'active' },
+        overrideAccess: true,
+      })
+    }
+
+    // Primo login dopo invito
+    if (user.status === 'invited') {
+      return await payload.update({
+        collection: 'users',
+        id: user.id,
+        data: { status: 'active', name },
+        overrideAccess: true,
+      })
+    }
+
+    return user
+  }
+
+  // Crea solo il bootstrap admin — tutti gli altri devono essere invitati
+  if (isBootstrapAdmin) {
+    return await payload.create({
+      collection: 'users',
+      data: { email, name, role: 'admin', status: 'active' },
+      overrideAccess: true,
+    })
+  }
+
+  // Chiunque altro: accesso negato anche se ha mail aziendale valida
+  throw new Error('Accesso non autorizzato. Richiedere un invito a un amministratore.')
+}
+
+// ❌ SBAGLIATO — crea utenti senza invito
+async findOrCreateUser({ email, name }) {
+  // ...
+  return await payload.create({
+    collection: 'users',
+    data: { email, name, role: 'hr' }, // ← apre l'accesso a chiunque del dominio
+  })
+}
+```
+
+---
+
+## PATTERN: Campo status nella collection Users
+
+```typescript
+// ✅ CORRETTO — entrambi i campi con saveToJWT: true
+{
+  name: 'role',
+  type: 'select',
+  saveToJWT: true,  // ← NON RIMUOVERE MAI
+  options: [
+    { label: 'Admin',           value: 'admin' },
+    { label: 'HR',              value: 'hr' },
+    { label: 'Amministrazione', value: 'amministrazione' },
+    // 'sistema' NON appare qui
+  ],
+  access: { update: ({ req: { user } }) => user?.role === 'admin' },
+},
+{
+  name: 'status',
+  type: 'select',
+  defaultValue: 'invited',
+  saveToJWT: true,  // ← NON RIMUOVERE MAI — blocca suspended senza DB lookup
+  options: [
+    { label: 'Invitato',  value: 'invited' },
+    { label: 'Attivo',    value: 'active' },
+    { label: 'Sospeso',   value: 'suspended' },
+  ],
+  access: { update: ({ req: { user } }) => user?.role === 'admin' },
+},
+
+// ❌ SBAGLIATO — status non nel JWT
+{
+  name: 'status',
+  type: 'select',
+  saveToJWT: false, // ← richiede DB lookup per verificare la sospensione
+}
+```
+
+---
+
+## PATTERN: canRead / canWrite con controllo status
+
+```typescript
+// ✅ CORRETTO — controllo status trasversale in permissions.ts
+export function canRead(resource: Resource) {
+  return ({ req }: { req: PayloadRequest }): boolean => {
+    const user = req.user
+    if (!user) return false
+    if (user.status === 'suspended') return false  // ← blocco trasversale
+    return activeProvider.canRead(user.role as UserRole, resource)
+  }
+}
+
+// ❌ SBAGLIATO — controlla solo il ruolo, ignora lo status
+export function canRead(resource: Resource) {
+  return ({ req }: { req: PayloadRequest }): boolean => {
+    const role = req.user?.role as UserRole
+    return activeProvider.canRead(role, resource)
+  }
+}
+```
+
+---
+
+## PATTERN: Collection con access control
+
+```typescript
+// ✅ CORRETTO — importa sempre dal registro centrale
+import { canRead, canWrite } from '../access/permissions'
+
+export const MiaCollection: CollectionConfig = {
+  slug: 'miaCollection',
+  access: {
+    read:   canRead('miaCollection'),
+    create: canWrite('miaCollection'),
+    update: canWrite('miaCollection'),
+    delete: ({ req }) => req.user?.role === 'admin',
+  },
+}
+
+// ❌ SBAGLIATO — logica inline nella collection
+access: {
+  read: ({ req }) => req.user?.role === 'hr' || req.user?.role === 'admin',
+}
+```
+
+---
+
+## PATTERN: Hook invio mail di invito
+
+```typescript
+// ✅ CORRETTO — src/collections/hooks/sendInviteEmailHook.ts
+export const sendInviteEmailHook: CollectionAfterChangeHook = async ({ doc, operation }) => {
+  if (operation !== 'create') return doc  // solo alla creazione
+  if (doc.role === 'sistema') return doc  // service account non riceve inviti
+
+  await sendMail({
+    to: doc.email,
+    subject: 'Sei stato invitato ad accedere al sistema',
+    html: `...link login Google...`,
+  })
+
+  return doc
+}
+
+// ❌ SBAGLIATO — invia mail anche agli update del record
+export const sendInviteEmailHook: CollectionAfterChangeHook = async ({ doc }) => {
+  // senza controllo su operation — si invia mail a ogni modifica del record
+  await sendMail({ to: doc.email, ... })
+}
+```
+
+---
+
+## PATTERN: Gmail API mailer
+
+```typescript
+// ✅ CORRETTO — src/services/mailer.ts
+import { google } from 'googleapis'
+
+export async function sendMail({ to, subject, html }) {
+  const key = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY_JSON!)
+
+  const auth = new google.auth.JWT({
+    email: key.client_email,
+    key: key.private_key,
+    scopes: ['https://www.googleapis.com/auth/gmail.send'],
+    subject: process.env.GMAIL_DELEGATED_USER, // impersona noreply@azienda.it
+  })
+
+  const gmail = google.gmail({ version: 'v1', auth })
+  // ... encode RFC 2822 e invia
+}
+
+// ❌ SBAGLIATO — usa servizi email esterni
+import sgMail from '@sendgrid/mail'  // non usare — abbiamo Gmail API inclusa in Workspace
+```
+
+---
+
+## PATTERN: Worker asincrono
+
+```typescript
+// ✅ CORRETTO
+export async function processWebhook(payload: Payload, data: unknown) {
+  await payload.create({
+    collection: 'webhookLogs',
+    data: { ... },
+    overrideAccess: true, // obbligatorio nei worker
+  })
+}
+
+// ❌ SBAGLIATO — overrideAccess fuori da src/workers/
+```
+
+---
+
+## PATTERN: Endpoint interno protetto
+
+```typescript
+// ✅ CORRETTO
+import { isSistema } from '../../access/helpers'
+
+handler: async (req, res) => {
+  if (!isSistema(req.user)) {
+    return res.status(403).json({ error: 'Riservato al service account sistema' })
+  }
+}
+
+// ❌ SBAGLIATO — endpoint /internal/ senza verifica ruolo
+```
+
+---
+
+## PATTERN: Helper nel codice applicativo
+
+```typescript
+// ✅ CORRETTO
+import { isAdmin, isHR, isActive } from '../access/helpers'
+
+if (!isActive(req.user)) throw new Forbidden()
+if (!isAdmin(req.user) && !isHR(req.user)) throw new Forbidden()
+
+// ❌ SBAGLIATO — comparazioni stringa dirette fuori da helpers.ts
+if (req.user?.role === 'hr') { ... }
+if (req.user?.status === 'active') { ... }
+```
+
+---
+
+## VARIABILI D'AMBIENTE RICHIESTE
+
+| Variabile                        | Scope   | Descrizione                                        |
+|----------------------------------|---------|----------------------------------------------------|
+| `GOOGLE_CLIENT_ID`               | Runtime | OAuth2 app Google                                  |
+| `GOOGLE_CLIENT_SECRET`           | Secret  | OAuth2 secret Google                               |
+| `PAYLOAD_PUBLIC_SERVER_URL`      | Runtime | URL pubblico del server (per callback OAuth e link invito) |
+| `ALLOWED_EMAIL_DOMAIN`           | Runtime | Es. `azienda.it` — restrizione dominio             |
+| `BOOTSTRAP_ADMIN_EMAIL`          | Runtime | Email del primo admin — promozione automatica al login |
+| `SISTEMA_EMAIL`                  | Runtime | Email del service account sistema                  |
+| `SISTEMA_JWT`                    | Secret  | JWT del service account (da GCP Secret Manager)    |
+| `PAYLOAD_INTERNAL_URL`           | Runtime | URL interno per chiamate worker→Payload            |
+| `GMAIL_SENDER_ADDRESS`           | Runtime | Es. `noreply@azienda.it` — mittente mail inviti    |
+| `GMAIL_DELEGATED_USER`           | Runtime | Account impersonato dalla domain-wide delegation   |
+| `GOOGLE_SERVICE_ACCOUNT_KEY_JSON`| Secret  | Chiave JSON del Service Account GCP (da Secret Mgr)|
+
+---
+
+## MAPPA PERMESSI — aggiornare in sync
+
+Quando si modifica `READ_PERMISSIONS` o `WRITE_PERMISSIONS`:
+
+1. Il tipo `Resource` include la nuova risorsa
+2. Tutti e 4 i ruoli hanno una voce nella mappa (anche se array vuoto `[]`)
+3. I test unitari di `permissions.ts` coprono i nuovi casi
+4. Il documento `docs/project/030-auth-roles.md` è aggiornato
+
+---
+
+## DEBITO TECNICO TRACCIATO
+
+### DT-AUTH-001 — Permessi statici
+- **Trigger migrazione:** permessi per-progetto, config da UI admin
+- **Come migrare:** `DynamicPermissionProvider` + `_setPermissionProvider()` — zero impatto sulle Collection
+
+### DT-AUTH-002 — JWT sistema a lunga scadenza
+- **Mitigazione:** GCP Secret Manager, accesso auditato
+- **Soluzione futura:** Workload Identity Federation
+
+### DT-AUTH-003 — Reinvio invito manuale
+- **Workaround attuale:** admin fa update del record per ri-triggerare l'hook
+- **Soluzione futura:** Custom Action Payload sulla collection Users
+
+---
+
+## CHECKLIST PRIMA DI OGNI PR CHE TOCCA AUTH
+
+- [ ] `saveToJWT: true` presente su `role` e `status` in Users.ts
+- [ ] `disableLocalStrategy: true` presente in Users.ts auth config
+- [ ] `findOrCreateUser()` blocca utenti non invitati con `throw new Error`
+- [ ] `findOrCreateUser()` blocca utenti `suspended` con `throw new Error`
+- [ ] `canRead`/`canWrite` controllano `status === 'suspended'`
+- [ ] Nessuna logica di permesso inline nelle Collection
+- [ ] `overrideAccess: true` usato solo in `src/workers/`
+- [ ] Endpoint `/internal/*` proteggono con `isSistema(req.user)`
+- [ ] `sendInviteEmailHook` controlla `operation === 'create'` e `role !== 'sistema'`
+- [ ] `GOOGLE_SERVICE_ACCOUNT_KEY_JSON` letta da env, mai hardcoded
+- [ ] Nuove risorse aggiunte al tipo `Resource` in permissions.ts
+- [ ] Tutte le variabili d'ambiente aggiunte a `.env.example` (mai valori reali nel repo)
+- [ ] `sistema` non appare nell'array `options` del campo `role`
