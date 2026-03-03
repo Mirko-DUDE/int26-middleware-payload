@@ -142,37 +142,52 @@ admin: {
 **Scopo:** Utenti dell'Admin UI. Già presente — da estendere con il campo `role`.
 **Group UI:** `Sistema`
 
-### Estensione: campo `role`
-
-Aggiungere al fields array della Collection esistente:
+### Campi aggiunti
 
 ```typescript
+// Campo name — valorizzato al primo login Google
+{ name: 'name', type: 'text' }
+
+// Campo role — nel JWT per evitare DB lookup
 {
   name: 'role',
   type: 'select',
   required: true,
   defaultValue: 'hr',
+  saveToJWT: true,
   options: [
-    { label: 'Admin',          value: 'admin' },
-    { label: 'HR',             value: 'hr' },
+    { label: 'Admin',           value: 'admin' },
+    { label: 'HR',              value: 'hr' },
     { label: 'Amministrazione', value: 'amministrazione' },
-    { label: 'Sistema',        value: 'sistema' },
+    // 'sistema' NON appare qui — è un ruolo interno non assegnabile da UI
   ],
-  saveToJWT: true,        // il ruolo è nel JWT — no lookup DB ad ogni richiesta
-  admin: {
-    description: 'Ruolo operativo. Determina le aree visibili e le azioni permesse.',
-  },
-},
+  access: { update: ({ req: { user } }) => user?.role === 'admin' },
+}
+
+// Campo status — nel JWT per bloccare sospesi senza DB lookup
+{
+  name: 'status',
+  type: 'select',
+  required: true,
+  defaultValue: 'invited',
+  saveToJWT: true,
+  options: [
+    { label: 'Invitato',  value: 'invited' },
+    { label: 'Attivo',    value: 'active' },
+    { label: 'Sospeso',   value: 'suspended' },
+  ],
+  access: { update: ({ req: { user } }) => user?.role === 'admin' },
+}
 ```
 
-Il campo `saveToJWT: true` è critico: il worker e le API route leggono il ruolo
-direttamente dal token senza query aggiuntive al DB.
+`saveToJWT: true` su entrambi `role` e `status` è critico: worker e API route leggono
+il ruolo e lo stato direttamente dal token senza query aggiuntive al DB.
 
 ### Autenticazione
 
-Google SSO (OAuth2) — solo utenti del dominio aziendale. Configurato in `payload.config.ts`.
+Google SSO (OAuth2) — `disableLocalStrategy: true`. Solo utenti del dominio aziendale.
 Il service account dei worker usa il ruolo `sistema` con autenticazione via Cloud Tasks
-header, non via UI login.
+OIDC token, non via UI login. Vedi `030-auth-roles.mdc` per il pattern completo.
 
 ---
 

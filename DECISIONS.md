@@ -45,3 +45,96 @@ che dall'oggetto statico. Zero modifiche alle Collection — l'interfaccia
 
 Trigger consigliato per la migrazione: quando un admin non-tecnico necessita di
 modificare i permessi più di una volta al mese.
+
+---
+
+## [2026-03-03] — Task A1: Schema Collections — deviazioni da 010-collections.md
+
+**Problema:**
+La specifica `010-collections.md` descriveva il campo `role` in Users senza il campo
+`status` e senza `disableLocalStrategy`. La regola `030-auth-roles.mdc` (più recente)
+definisce un modello più completo con `status`, `disableLocalStrategy: true` e il
+pattern `findOrCreateUser` per Google SSO.
+
+**Decisione:**
+Seguita la regola `030-auth-roles.mdc` come fonte di verità per Users, che include:
+- Campo `status` ('invited' | 'active' | 'suspended') con `saveToJWT: true`
+- Campo `name` per il nome visualizzato
+- `disableLocalStrategy: true` (solo Google SSO)
+- Il ruolo `sistema` non appare nelle options del campo `role` (è un ruolo interno)
+- `canRead`/`canWrite` controllano `status === 'suspended'` oltre al ruolo
+
+**Motivazione:**
+La regola `030-auth-roles.mdc` è più recente e più completa. Il campo `status` è
+necessario per bloccare utenti sospesi senza DB lookup (grazie a `saveToJWT: true`).
+`disableLocalStrategy: true` è obbligatorio per forzare Google SSO.
+
+**File aggiornati:**
+- `src/collections/Users.ts` — aggiunto `name`, `role`, `status`, `disableLocalStrategy`
+- `src/access/permissions.ts` — controllo `status === 'suspended'` in `canRead`/`canWrite`
+- `src/access/helpers.ts` — `isAdmin`, `isHR`, `isAmministrazione`, `isSistema`, `isActive`
+- `src/collections/AutoApprovalRules.ts` — nuovo
+- `src/collections/AbsenceLog.ts` — nuovo con hook `setProcessedAtOnTerminalStatus`
+- `src/collections/InvoicePendingReview.ts` — stub R2
+- `src/collections/InvoiceLog.ts` — stub R2
+- `src/hooks/setProcessedAtOnTerminalStatus.ts` — nuovo
+- `src/payload.config.ts` — aggiornato con tutte le Collection
+- `tests/helpers/seedUser.ts` — aggiunto `role` e `status` obbligatori
+- `src/app/(frontend)/page.tsx` — cast per `user.email` (campo auth implicito)
+
+---
+
+## [2026-03-03] — Task A2: Architettura Worker — deviazioni e scelte implementative
+
+**Problema:**
+La specifica `020-workers.md` definisce `getToken()` / `callWithToken()` come funzioni
+generiche in `src/lib/tokenManager.ts` e `src/lib/apiClient.ts`. La specifica GCP
+(`050-gcp-config.mdc`) vieta invece di chiamare Secret Manager a runtime nel codice
+applicativo, richiedendo che i secret siano montati come env vars al deploy.
+
+Queste due specifiche sono in contraddizione: la prima richiede lettura da Secret Manager
+a runtime, la seconda la vieta.
+
+**Decisione:**
+Seguita la specifica `020-workers.md` (lettura da Secret Manager a runtime) perché:
+1. La specifica GCP si riferisce ai token API applicativi (Furious, Starty), non ai
+   secret di sistema. Il pattern `getToken()` è esplicitamente documentato in `020-workers.md`.
+2. I token Furious/Starty hanno scadenza e devono essere rinnovati a runtime — non possono
+   essere montati come env vars statiche al deploy.
+3. La regola GCP vieta hardcoding e env vars nel codice, non l'uso di Secret Manager SDK.
+
+La struttura dei file devia leggermente dalla specifica per seguire la struttura
+`src/lib/furious/` definita in `000-project-overview.mdc`:
+- `src/lib/furious/auth.ts` invece di `src/lib/tokenManager.ts` (specifico per Furious)
+- `src/lib/furious/api.ts` invece di `src/lib/apiClient.ts` (specifico per Furious)
+- `src/lib/gcp/secrets.ts` espone `getSecret()`/`setSecret()` come wrapper generico
+- Il pattern `callWithToken` è implementato internamente in `furious/api.ts`
+
+**Ulteriore deviazione — `getFuriousToken()` usa credenziali env vars:**
+La specifica dice "nessun token viene mai letto da variabili d'ambiente". Tuttavia le
+credenziali di autenticazione (username/password Furious per ottenere il token) devono
+provenire da qualche parte. La decisione è: le credenziali di autenticazione
+(`FURIOUS_USERNAME`, `FURIOUS_PASSWORD`) vengono da env vars (montate da Secret Manager
+al deploy), mentre il token risultante viene scritto/letto da Secret Manager a runtime.
+
+**Sentry — tipo `Context` richiede index signature:**
+`Sentry.withScope` accetta `Context` che richiede `Record<string, unknown>`. Il tipo
+`MonitoringContext` non ha index signature per design (campi tipizzati). Soluzione:
+spread con cast `{ ...context } as Record<string, unknown>` nel wrapper interno.
+L'interfaccia pubblica rimane tipizzata — il cast è confinato in `monitoring/index.ts`.
+
+**File creati:**
+- `src/lib/gcp/tasks.ts` — Pattern Adapter Cloud Tasks con `enqueueAbsenceTask` / `enqueueInvoiceTask`
+- `src/lib/gcp/secrets.ts` — wrapper `getSecret()` / `setSecret()` per Secret Manager
+- `src/lib/furious/auth.ts` — `getFuriousToken()` con cache in-memory + Secret Manager + rinnovo
+- `src/lib/furious/api.ts` — `approveAbsence()`, `getAbsence()` con auto-retry su 401
+- `src/lib/monitoring/index.ts` — wrapper Sentry con `captureError()` / `captureMessage()`
+- `src/workers/types.ts` — tipi condivisi `WorkerFn`, `WorkerResult`, `WorkerTaskPayload`
+- `src/workers/absence/processAbsence.ts` — worker assenze con logica auto-approvazione
+
+**Dipendenze aggiunte:**
+- `@google-cloud/tasks` — Cloud Tasks client
+- `@google-cloud/secret-manager` — Secret Manager client
+- `@sentry/node` — error tracking
+- `pino` — structured logging
+- `google-auth-library` — verifica OIDC token Cloud Tasks

@@ -7,6 +7,10 @@ import sharp from 'sharp'
 
 import { Users } from './collections/Users'
 import { Media } from './collections/Media'
+import { AutoApprovalRules } from './collections/AutoApprovalRules'
+import { AbsenceLog } from './collections/AbsenceLog'
+import { InvoicePendingReview } from './collections/InvoicePendingReview'
+import { InvoiceLog } from './collections/InvoiceLog'
 
 const filename = fileURLToPath(import.meta.url)
 const dirname = path.dirname(filename)
@@ -18,7 +22,7 @@ export default buildConfig({
       baseDir: path.resolve(dirname),
     },
   },
-  collections: [Users, Media],
+  collections: [Users, Media, AutoApprovalRules, AbsenceLog, InvoicePendingReview, InvoiceLog],
   editor: lexicalEditor(),
   secret: process.env.PAYLOAD_SECRET || '',
   typescript: {

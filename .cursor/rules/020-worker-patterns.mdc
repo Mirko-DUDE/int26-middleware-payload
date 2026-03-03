@@ -227,25 +227,66 @@ export const myWorkerHandler: PayloadHandler = async (req, res) => {
 }
 ```
 
-## Struttura directory
+## Struttura directory (implementata in A2)
 
 ```
 src/
 ├── workers/
-│   ├── types.ts                  # Tipi condivisi (WorkerFn, WorkerResult, ecc.)
-│   ├── runner.ts                 # Runner generico — NON modificare per ogni worker
-│   ├── absenceApproval.ts        # Worker specifico
-│   └── invoiceSync.ts            # Worker specifico
-├── endpoints/
-│   └── workers/
-│       ├── absence.ts            # Endpoint HTTP → chiama runner + absenceApprovalWorker
-│       └── invoice.ts
-└── lib/
-    ├── tokenManager.ts           # getToken, invalidateToken
-    ├── apiClient.ts              # callWithToken
-    ├── logger.ts                 # createWorkerLogger
-    ├── taskLogs.ts               # updateTaskStatus
-    └── cloudTasks.ts             # verifyCloudTasksRequest, enqueueTask
+│   ├── types.ts                          # WorkerFn, WorkerResult, WorkerTaskPayload, TaskStatus
+│   └── absence/
+│       └── processAbsence.ts             # Worker assenze (AbsenceWorkerData)
+├── lib/
+│   ├── gcp/
+│   │   ├── tasks.ts                      # enqueueAbsenceTask, enqueueInvoiceTask
+│   │   └── secrets.ts                    # getSecret, setSecret
+│   ├── furious/
+│   │   ├── auth.ts                       # getFuriousToken, invalidateFuriousToken
+│   │   └── api.ts                        # approveAbsence, getAbsence, FuriousApiError
+│   └── monitoring/
+│       └── index.ts                      # captureError, captureMessage (wrapper Sentry)
+```
+
+## Pattern Furious API — auto-retry su 401
+
+```typescript
+// src/lib/furious/api.ts — pattern interno (non replicare altrove)
+// 1. Chiama con token corrente
+// 2. Se 401 → invalidateFuriousToken() → getFuriousToken() → richiama
+// 3. Se ancora 401 → FuriousApiError(401) — retriable: true nel worker
+
+// Uso nel worker:
+import { approveAbsence, FuriousApiError } from '@/lib/furious/api'
+try {
+  await approveAbsence(furiousAbsenceId)
+} catch (err) {
+  if (err instanceof FuriousApiError && err.status === 404) {
+    return { success: false, message: '...', retriable: false }
+  }
+  return { success: false, message: err.message, retriable: true }
+}
+```
+
+## Pattern Monitoring — mai importare Sentry direttamente
+
+```typescript
+// ✅ CORRETTO
+import { captureError, captureMessage } from '@/lib/monitoring'
+captureError(error, { taskId, collection: 'absence-log', attempt })
+
+// ❌ SBAGLIATO — import diretto di Sentry fuori da src/lib/monitoring/
+import * as Sentry from '@sentry/node'
+```
+
+## AbsenceWorkerData — payload specifico del worker assenze
+
+```typescript
+// src/workers/absence/processAbsence.ts
+interface AbsenceWorkerData {
+  absenceLogId: string       // ID record in absence-log
+  furiousAbsenceId: number   // ID assenza su Furious
+  pseudo: string             // Pseudo richiedente
+}
+// Accesso: taskPayload.data as unknown as AbsenceWorkerData
 ```
 
 ## Flusso asincrono definitivo (NON modificare)

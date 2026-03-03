@@ -3,6 +3,70 @@
 > **Sottofase A / Task A2** — Contratto tecnico riutilizzabile per tutti i worker del sistema.  
 > Ogni worker futuro (assenze, fatture, sincronizzazioni) **deve** rispettare questo pattern senza eccezioni.
 
+## Stato implementazione (aggiornato 2026-03-03)
+
+I file seguenti sono stati creati e compilano senza errori TypeScript:
+
+| File | Descrizione |
+|------|-------------|
+| `src/workers/types.ts` | Tipi condivisi: `WorkerFn`, `WorkerResult`, `WorkerTaskPayload`, `TaskStatus` |
+| `src/workers/absence/processAbsence.ts` | Worker assenze con logica auto-approvazione |
+| `src/lib/gcp/tasks.ts` | Pattern Adapter Cloud Tasks: `enqueueAbsenceTask`, `enqueueInvoiceTask` |
+| `src/lib/gcp/secrets.ts` | Wrapper Secret Manager: `getSecret`, `setSecret` |
+| `src/lib/furious/auth.ts` | `getFuriousToken()` con cache in-memory + Secret Manager + rinnovo su 401 |
+| `src/lib/furious/api.ts` | `approveAbsence()`, `getAbsence()` con auto-retry su 401 |
+| `src/lib/monitoring/index.ts` | Wrapper Sentry: `captureError()`, `captureMessage()` |
+
+### Struttura directory effettiva
+
+La struttura segue `000-project-overview.mdc` (non la struttura proposta in questo doc):
+
+```
+src/
+├── workers/
+│   ├── types.ts                          # WorkerFn, WorkerResult, ecc.
+│   └── absence/
+│       └── processAbsence.ts             # Worker assenze
+├── lib/
+│   ├── gcp/
+│   │   ├── tasks.ts                      # enqueueAbsenceTask, enqueueInvoiceTask
+│   │   └── secrets.ts                    # getSecret, setSecret
+│   ├── furious/
+│   │   ├── auth.ts                       # getFuriousToken, invalidateFuriousToken
+│   │   └── api.ts                        # approveAbsence, getAbsence, FuriousApiError
+│   └── monitoring/
+│       └── index.ts                      # captureError, captureMessage (wrapper Sentry)
+```
+
+### Variabili d'ambiente richieste (A2)
+
+| Variabile | Descrizione |
+|-----------|-------------|
+| `GCP_PROJECT_ID` | ID progetto GCP |
+| `GCP_LOCATION` | Regione GCP (default: `europe-west1`) |
+| `WORKER_BASE_URL` | URL base worker per Cloud Tasks |
+| `CLOUD_TASKS_SERVICE_ACCOUNT` | Email service account per OIDC |
+| `CLOUD_TASKS_QUEUE_ABSENCES` | Nome coda Cloud Tasks assenze |
+| `CLOUD_TASKS_QUEUE_INVOICES` | Nome coda Cloud Tasks fatture |
+| `FURIOUS_USERNAME` | Username per autenticazione Furious |
+| `FURIOUS_PASSWORD` | Password per autenticazione Furious |
+| `SENTRY_DSN` | DSN Sentry (opzionale in development) |
+
+### Note implementative
+
+**`getFuriousToken()` — strategia cache a tre livelli:**
+1. Cache in-memory (più veloce, dura fino al riavvio del processo)
+2. Secret Manager (persiste tra i riavvii, legge `furious-auth-token` + `furious-auth-token-expires`)
+3. Nuova autenticazione POST `/api/v2/auth/` (scrive il nuovo token in Secret Manager)
+
+**`processAbsence` — logica di business:**
+- Se `pseudo` non è in `AutoApprovalRules` con `flowType: 'absence'` → status `skipped` (successo, non errore)
+- Se `pseudo` è in lista → chiama `approveAbsence()` su Furious → status `approved`
+- HTTP 404/400 da Furious → status `failed_permanent` (non-retriable)
+- Qualsiasi altro errore → retriable (Cloud Tasks rischedulerà)
+
+---
+
 ---
 
 ## 1. Cos'è un Worker

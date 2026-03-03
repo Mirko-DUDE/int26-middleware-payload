@@ -69,6 +69,10 @@ export interface Config {
   collections: {
     users: User;
     media: Media;
+    'auto-approval-rules': AutoApprovalRule;
+    'absence-log': AbsenceLog;
+    'invoice-pending-review': InvoicePendingReview;
+    'invoice-log': InvoiceLog;
     'payload-kv': PayloadKv;
     'payload-locked-documents': PayloadLockedDocument;
     'payload-preferences': PayloadPreference;
@@ -78,6 +82,10 @@ export interface Config {
   collectionsSelect: {
     users: UsersSelect<false> | UsersSelect<true>;
     media: MediaSelect<false> | MediaSelect<true>;
+    'auto-approval-rules': AutoApprovalRulesSelect<false> | AutoApprovalRulesSelect<true>;
+    'absence-log': AbsenceLogSelect<false> | AbsenceLogSelect<true>;
+    'invoice-pending-review': InvoicePendingReviewSelect<false> | InvoicePendingReviewSelect<true>;
+    'invoice-log': InvoiceLogSelect<false> | InvoiceLogSelect<true>;
     'payload-kv': PayloadKvSelect<false> | PayloadKvSelect<true>;
     'payload-locked-documents': PayloadLockedDocumentsSelect<false> | PayloadLockedDocumentsSelect<true>;
     'payload-preferences': PayloadPreferencesSelect<false> | PayloadPreferencesSelect<true>;
@@ -123,23 +131,20 @@ export interface UserAuthOperations {
  */
 export interface User {
   id: number;
+  /**
+   * Nome visualizzato (valorizzato al primo login Google).
+   */
+  name?: string | null;
+  /**
+   * Ruolo operativo. Determina le aree visibili e le azioni permesse.
+   */
+  role: 'admin' | 'hr' | 'amministrazione';
+  /**
+   * Stato account. Gli utenti sospesi non possono accedere.
+   */
+  status: 'invited' | 'active' | 'suspended';
   updatedAt: string;
   createdAt: string;
-  email: string;
-  resetPasswordToken?: string | null;
-  resetPasswordExpiration?: string | null;
-  salt?: string | null;
-  hash?: string | null;
-  loginAttempts?: number | null;
-  lockUntil?: string | null;
-  sessions?:
-    | {
-        id: string;
-        createdAt?: string | null;
-        expiresAt: string;
-      }[]
-    | null;
-  password?: string | null;
   collection: 'users';
 }
 /**
@@ -160,6 +165,164 @@ export interface Media {
   height?: number | null;
   focalX?: number | null;
   focalY?: number | null;
+}
+/**
+ * Regole di auto-approvazione per pseudo manager.
+ *
+ * This interface was referenced by `Config`'s JSON-Schema
+ * via the `definition` "auto-approval-rules".
+ */
+export interface AutoApprovalRule {
+  id: number;
+  /**
+   * Pseudonimo su Furious (case-sensitive).
+   */
+  pseudo: string;
+  /**
+   * Tipo di flusso a cui si applica la regola.
+   */
+  flowType: 'absence';
+  /**
+   * Note operative opzionali (non usate dal sistema).
+   */
+  note?: string | null;
+  updatedAt: string;
+  createdAt: string;
+}
+/**
+ * Log di tutti gli eventi assenza ricevuti da Furious.
+ *
+ * This interface was referenced by `Config`'s JSON-Schema
+ * via the `definition` "absence-log".
+ */
+export interface AbsenceLog {
+  id: number;
+  /**
+   * ID assenza su Furious (campo `id` del webhook).
+   */
+  furiousAbsenceId: number;
+  /**
+   * Pseudonimo richiedente (campo `pseudo` del webhook).
+   */
+  pseudo: string;
+  /**
+   * Data inizio assenza (campo `start_date`).
+   */
+  startDate: string;
+  /**
+   * Data fine assenza (campo `end_date`).
+   */
+  endDate: string;
+  /**
+   * Tipo assenza (campo `type` — stringa completa da Furious).
+   */
+  absenceType: string;
+  /**
+   * Mezza giornata (campo `half_day`: 0=intera, 1=mattina, 2=pomeriggio).
+   */
+  halfDay?: ('0' | '1' | '2') | null;
+  /**
+   * Stato del processing. Vedi state machine in 010-collections.md.
+   */
+  status: 'received' | 'processing' | 'approved' | 'skipped' | 'failed_permanent';
+  /**
+   * Numero di tentativi di processing eseguiti dal worker.
+   */
+  attempts?: number | null;
+  /**
+   * Ultimo messaggio di errore (stringa o JSON serializzato).
+   */
+  lastError?: string | null;
+  /**
+   * Timestamp del completamento del processing (approved/skipped/failed).
+   */
+  processedAt?: string | null;
+  /**
+   * Payload originale del webhook Furious. Immutabile dopo creazione.
+   */
+  rawPayload:
+    | {
+        [k: string]: unknown;
+      }
+    | unknown[]
+    | string
+    | number
+    | boolean
+    | null;
+  /**
+   * Nome del task Cloud Tasks accodato (per debug e idempotency).
+   */
+  taskName?: string | null;
+  updatedAt: string;
+  createdAt: string;
+}
+/**
+ * [R2] Coda fatture in attesa di revisione manuale.
+ *
+ * This interface was referenced by `Config`'s JSON-Schema
+ * via the `definition` "invoice-pending-review".
+ */
+export interface InvoicePendingReview {
+  id: number;
+  /**
+   * ID fattura su Furious.
+   */
+  furiousInvoiceId: number;
+  /**
+   * ID fattura su Starty (da definire in R2).
+   */
+  startyInvoiceId?: string | null;
+  /**
+   * Numero PO (campo da chiarire con amministrazione).
+   */
+  purchaseOrder?: string | null;
+  status: 'pending' | 'reviewed' | 'sent' | 'failed_permanent';
+  attempts?: number | null;
+  lastError?: string | null;
+  processedAt?: string | null;
+  rawPayload:
+    | {
+        [k: string]: unknown;
+      }
+    | unknown[]
+    | string
+    | number
+    | boolean
+    | null;
+  updatedAt: string;
+  createdAt: string;
+}
+/**
+ * [R2] Audit log completo di ogni evento fattura processato.
+ *
+ * This interface was referenced by `Config`'s JSON-Schema
+ * via the `definition` "invoice-log".
+ */
+export interface InvoiceLog {
+  id: number;
+  /**
+   * ID fattura su Furious.
+   */
+  furiousInvoiceId: number;
+  /**
+   * ID fattura su Starty.
+   */
+  startyInvoiceId?: string | null;
+  status: 'received' | 'processing' | 'sent' | 'skipped' | 'failed_permanent';
+  attempts?: number | null;
+  lastError?: string | null;
+  processedAt?: string | null;
+  rawPayload:
+    | {
+        [k: string]: unknown;
+      }
+    | unknown[]
+    | string
+    | number
+    | boolean
+    | null;
+  updatedAt: string;
+  createdAt: string;
 }
 /**
  * This interface was referenced by `Config`'s JSON-Schema
@@ -192,6 +355,22 @@ export interface PayloadLockedDocument {
     | ({
         relationTo: 'media';
         value: number | Media;
+      } | null)
+    | ({
+        relationTo: 'auto-approval-rules';
+        value: number | AutoApprovalRule;
+      } | null)
+    | ({
+        relationTo: 'absence-log';
+        value: number | AbsenceLog;
+      } | null)
+    | ({
+        relationTo: 'invoice-pending-review';
+        value: number | InvoicePendingReview;
+      } | null)
+    | ({
+        relationTo: 'invoice-log';
+        value: number | InvoiceLog;
       } | null);
   globalSlug?: string | null;
   user: {
@@ -240,22 +419,11 @@ export interface PayloadMigration {
  * via the `definition` "users_select".
  */
 export interface UsersSelect<T extends boolean = true> {
+  name?: T;
+  role?: T;
+  status?: T;
   updatedAt?: T;
   createdAt?: T;
-  email?: T;
-  resetPasswordToken?: T;
-  resetPasswordExpiration?: T;
-  salt?: T;
-  hash?: T;
-  loginAttempts?: T;
-  lockUntil?: T;
-  sessions?:
-    | T
-    | {
-        id?: T;
-        createdAt?: T;
-        expiresAt?: T;
-      };
 }
 /**
  * This interface was referenced by `Config`'s JSON-Schema
@@ -274,6 +442,68 @@ export interface MediaSelect<T extends boolean = true> {
   height?: T;
   focalX?: T;
   focalY?: T;
+}
+/**
+ * This interface was referenced by `Config`'s JSON-Schema
+ * via the `definition` "auto-approval-rules_select".
+ */
+export interface AutoApprovalRulesSelect<T extends boolean = true> {
+  pseudo?: T;
+  flowType?: T;
+  note?: T;
+  updatedAt?: T;
+  createdAt?: T;
+}
+/**
+ * This interface was referenced by `Config`'s JSON-Schema
+ * via the `definition` "absence-log_select".
+ */
+export interface AbsenceLogSelect<T extends boolean = true> {
+  furiousAbsenceId?: T;
+  pseudo?: T;
+  startDate?: T;
+  endDate?: T;
+  absenceType?: T;
+  halfDay?: T;
+  status?: T;
+  attempts?: T;
+  lastError?: T;
+  processedAt?: T;
+  rawPayload?: T;
+  taskName?: T;
+  updatedAt?: T;
+  createdAt?: T;
+}
+/**
+ * This interface was referenced by `Config`'s JSON-Schema
+ * via the `definition` "invoice-pending-review_select".
+ */
+export interface InvoicePendingReviewSelect<T extends boolean = true> {
+  furiousInvoiceId?: T;
+  startyInvoiceId?: T;
+  purchaseOrder?: T;
+  status?: T;
+  attempts?: T;
+  lastError?: T;
+  processedAt?: T;
+  rawPayload?: T;
+  updatedAt?: T;
+  createdAt?: T;
+}
+/**
+ * This interface was referenced by `Config`'s JSON-Schema
+ * via the `definition` "invoice-log_select".
+ */
+export interface InvoiceLogSelect<T extends boolean = true> {
+  furiousInvoiceId?: T;
+  startyInvoiceId?: T;
+  status?: T;
+  attempts?: T;
+  lastError?: T;
+  processedAt?: T;
+  rawPayload?: T;
+  updatedAt?: T;
+  createdAt?: T;
 }
 /**
  * This interface was referenced by `Config`'s JSON-Schema
