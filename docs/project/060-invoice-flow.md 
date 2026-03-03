@@ -1,0 +1,46 @@
+# 060 — Flusso Fatture Passive: Sincronizzazione Starty → Furious
+
+> **Sottofase:** C — Release Fatture Passive  
+> **Stato:** 🔜 TODO — Release 2  
+> **Dipendenze:** `010-collections.md`, `020-workers.md`, `040-logging.md`
+
+> **TODO: Release 2** — stub. Completare all'inizio della Sottofase C,  
+> prima di scrivere codice. InvoiceLog e InvoicePendingReview sono già  
+> presenti come stub da A1. `enqueueInvoiceTask()` è già in `tasks.ts`.
+
+## 3. Casi d'uso (C1–C4)
+- [ ] Lettura fatture da Starty (API o DB diretto — decidere in C1)
+- [ ] Tabella transcodifica ID Starty ↔ ID Furious (C2)
+- [ ] `POST /api/v2/purchase/` — C3
+- [ ] `POST /api/v2/purchase-partial/` — C4
+- [ ] Deduplicazione su retry
+- [ ] Gestione `pending_review`
+```
+
+---
+
+## Inventario numerazione — stato finale
+
+**`docs/project/`** (nessun conflitto):
+```
+000-architecture.md
+010-collections.md
+020-workers.md
+030-auth-roles.md
+040-logging.md
+050-gcp-infrastructure.md
+060-absence-flow.md    ← nuovo
+060-invoice-flow.md    ← nuovo (stub)
+```
+
+**`.cursor/rules/`** (nessun conflitto):
+```
+000-project-overview.mdc
+001-documentation-policy.mdc
+010-payloadcms-collections.mdc
+020-worker-patterns.mdc
+030-auth-roles.mdc
+040-logging.mdc
+050-gcp-config.mdc
+060-absence-flow.mdc   ← nuovo
+060-invoice-flow.mdc   ← nuovo (stub)

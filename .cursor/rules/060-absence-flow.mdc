@@ -1,0 +1,297 @@
+---
+description: Pattern e regole per il flusso assenze — endpoint webhook, worker, gestione stati AbsenceLog, retry, notifiche. Leggere prima di toccare qualsiasi file in src/endpoints/absence*, src/workers/absence/*, o la collection AbsenceLog.
+globs:
+  - src/endpoints/absenceWebhook.ts
+  - src/endpoints/absenceWorkerEndpoint.ts
+  - src/workers/absence/**
+  - src/collections/AbsenceLog.ts
+alwaysApply: false
+---
+
+# Regole flusso assenze
+
+## Struttura file — dove si trova cosa
+
+```
+src/endpoints/absenceWebhook.ts          B1 — ricezione webhook pubblico
+src/endpoints/absenceWorkerEndpoint.ts   B3 — endpoint interno Cloud Tasks
+src/workers/absence/processAbsence.ts    B2 — logica di business pura
+src/services/mailer.ts                   B4 — sendFailedTaskEmail()
+src/collections/AbsenceLog.ts            State machine + rawPayload
+src/collections/AutoApprovalRules.ts     Tabella pseudo → auto-approvazione
+src/lib/gcp/tasks.ts                     enqueueAbsenceTask() — NON chiamare CloudTasksClient direttamente
+src/lib/furious/api.ts                   approveAbsence(), getAbsence()
+```
+
+---
+
+## Pattern: endpoint webhook (`absenceWebhook.ts`)
+
+### Firma handler
+
+```typescript
+import type { PayloadRequest } from 'payload'
+
+export async function absenceWebhookHandler(req: PayloadRequest): Promise<Response> { ... }
+```
+
+### Registrazione in `payload.config.ts`
+
+```typescript
+import { absenceWebhookHandler } from '@/endpoints/absenceWebhook'
+import { absenceWorkerHandler } from '@/endpoints/absenceWorkerEndpoint'
+
+export default buildConfig({
+  endpoints: [
+    { path: '/webhooks/furious/absence', method: 'post', handler: absenceWebhookHandler },
+    { path: '/workers/absence',          method: 'post', handler: absenceWorkerHandler  },
+  ],
+})
+```
+
+### Payload webhook atteso da Furious
+
+```typescript
+interface FuriousAbsenceWebhookPayload {
+  id: number       // ID numerico assenza su Furious — OBBLIGATORIO
+  pseudo: string   // username dipendente — OBBLIGATORIO, non vuoto
+  [key: string]: unknown  // campi aggiuntivi accettati, salvati in rawPayload
+}
+```
+
+### Ordine obbligatorio delle operazioni nel webhook
+
+```
+1. req.json()                           — parse body
+2. isValidAbsencePayload(body)          — valida: 400 se fallisce
+3. payload.create(AbsenceLog, received) — PRIMA dell'accodamento
+4. enqueueAbsenceTask(...)              — accoda
+5. payload.update(AbsenceLog, queued)   — DOPO accodamento riuscito
+6. return 200                           — SEMPRE, anche se step 4 fallisce
+```
+
+**REGOLA CRITICA:** Non invertire i passi 3 e 4. Il record deve esistere su DB prima dell'accodamento. Se Cloud Tasks fallisce dopo il DB, il payload non è perso.
+
+**REGOLA CRITICA:** Rispondere sempre `200` a Furious. Un `5xx` farebbe ritentare Furious creando duplicati in `AbsenceLog`. Il fallimento dell'accodamento è un problema interno — il record rimane con `status: 'received'` per riconciliazione futura.
+
+### Risposta HTTP del webhook
+
+```typescript
+// Successo (sia con che senza accodamento)
+return new Response(JSON.stringify({ received: true, id: absenceLog.id }), { status: 200 })
+
+// Validazione fallita
+return new Response(JSON.stringify({ error: '...' }), { status: 400 })
+
+// DB irraggiungibile (unico caso di 500 — Furious può ritentare senza duplicati)
+return new Response(JSON.stringify({ error: 'Errore interno' }), { status: 500 })
+```
+
+---
+
+## Pattern: endpoint worker (`absenceWorkerEndpoint.ts`)
+
+### Autenticazione OIDC
+
+```typescript
+// Produzione: verifica Bearer token Cloud Tasks
+const authHeader = req.headers.get('authorization')  // 'Bearer <oidc-token>'
+const ticket = await authClient.verifyIdToken({
+  idToken: token,
+  audience: process.env.WORKER_BASE_URL,
+})
+// Verifica email del service account
+payload?.email === process.env.CLOUD_TASKS_SERVICE_ACCOUNT
+
+// Sviluppo locale: header custom
+req.headers.get('x-worker-dev-secret') === process.env.WORKER_DEV_SECRET
+```
+
+### Payload del task (identico a `AbsenceTaskPayload` in `tasks.ts`)
+
+```typescript
+interface AbsenceTaskPayload {
+  absenceLogId: string       // ID record AbsenceLog in PayloadCMS
+  furiousAbsenceId: number   // ID assenza su Furious
+  pseudo: string             // username dipendente
+  attempt: number            // numero tentativo corrente (inizia da 1)
+}
+```
+
+### Costanti
+
+```typescript
+const MAX_ATTEMPTS = 5  // deve coincidere con la config Cloud Tasks queue
+```
+
+### Matrice risposta HTTP endpoint worker
+
+| Condizione | Status HTTP | Effetto Cloud Tasks |
+|---|---|---|
+| `result.success === true` | `200` | task completato, nessun retry |
+| `result.retriable === false` | `200` | task completato (errore gestito), nessun retry |
+| `retriable && attempt >= MAX_ATTEMPTS` | `200` | task completato (failed_permanent scritto) |
+| `retriable && attempt < MAX_ATTEMPTS` | `503` | Cloud Tasks riprova con backoff esponenziale |
+| DB non disponibile (update a processing) | `503` | Cloud Tasks riprova |
+| Auth fallita | `403` | Cloud Tasks NON riprova (4xx non sono retriable) |
+
+**REGOLA CRITICA:** Non rispondere mai `5xx` per `failed_permanent`. Farlo farebbe continuare Cloud Tasks a ritentare all'infinito anche dopo che il DB ha già marcato il record come terminale.
+
+### Pattern aggiornamento AbsenceLog ad ogni transizione
+
+```typescript
+// Ogni update usa SEMPRE overrideAccess: true
+await req.payload.update({
+  collection: 'absence-log',
+  id: absenceLogId,
+  data: {
+    status: 'processing' | 'approved' | 'skipped' | 'failed_permanent',
+    attempts: attempt,       // aggiornato ad ogni transizione
+    lastError: '...',        // solo su stati di errore
+    // processedAt: NOT impostato manualmente — lo fa setProcessedAtOnTerminalStatus hook
+  },
+  overrideAccess: true,
+})
+```
+
+---
+
+## Pattern: worker puro (`processAbsence.ts`)
+
+### Firma
+
+```typescript
+import type { WorkerFn } from '@/workers/types'
+
+export const processAbsence: WorkerFn = async (ctx) => {
+  const { payload: taskPayload, logger } = ctx
+  const data = taskPayload.data as unknown as AbsenceWorkerData
+  // ...
+  return WorkerResult
+}
+```
+
+### Tipo dati worker
+
+```typescript
+interface AbsenceWorkerData {
+  absenceLogId: string
+  furiousAbsenceId: number
+  pseudo: string
+}
+```
+
+### Tipo di ritorno `WorkerResult`
+
+```typescript
+// Successo (approved o skipped)
+{ success: true,  message: string, externalId?: string, retriable: false }
+
+// Errore definitivo (404, 400)
+{ success: false, message: string, retriable: false }
+
+// Errore temporaneo (5xx, 429, 401, errori non classificati)
+{ success: false, message: string, retriable: true }
+```
+
+### Ricerca in `AutoApprovalRules`
+
+```typescript
+const rules = await payload.find({
+  collection: 'auto-approval-rules',
+  where: {
+    and: [
+      { pseudo:    { equals: pseudo    } },
+      { flowType:  { equals: 'absence' } },
+    ],
+  },
+  limit: 1,
+  overrideAccess: true,
+})
+// rules.totalDocs === 0 → skipped (non è un errore)
+```
+
+### Matrice errori Furious → retriable
+
+| `FuriousApiError.status` | `retriable` | `status` AbsenceLog |
+|---|---|---|
+| `404` | `false` | `failed_permanent` |
+| `400` | `false` | `failed_permanent` |
+| `5xx` | `true` | (invariato, aggiorna `attempts`/`lastError`) |
+| `429` | `true` | (invariato, aggiorna `attempts`/`lastError`) |
+| `401` dopo rinnovo | `true` | (invariato, aggiorna `attempts`/`lastError`) |
+| Errore generico | `true` | (fail-safe conservativo) |
+
+**REGOLA:** Non aggiungere nuovi status HTTP come non-retriable senza aggiornare anche questa tabella e `DECISIONS.md`.
+
+---
+
+## Pattern: notifica `failed_permanent` (`sendFailedTaskEmail`)
+
+```typescript
+import { sendFailedTaskEmail } from '@/services/mailer'
+
+// Chiamata da absenceWorkerEndpoint.ts quando attempt >= MAX_ATTEMPTS
+try {
+  await sendFailedTaskEmail({
+    collection:       'absence-log',
+    recordId:         absenceLogId,
+    furiousAbsenceId: furiousAbsenceId,
+    pseudo:           pseudo,
+    attempts:         attempt,
+    lastError:        result.message ?? 'Errore sconosciuto',
+  })
+} catch (mailErr) {
+  // NON rilanciare — la mail non è bloccante
+  captureError(mailErr, { taskId, collection, attempt, furiousId })
+}
+```
+
+**REGOLA:** `sendFailedTaskEmail` NON deve mai bloccare il flusso principale. Wrappare sempre in try/catch separato. Il record `failed_permanent` su DB è la fonte di verità — la mail è solo un'allerta.
+
+---
+
+## State machine `AbsenceLog` — transizioni permesse
+
+```
+received     → queued          (webhook endpoint, dopo accodamento)
+received     → received        (accodamento fallito: invariato)
+queued       → processing      (worker endpoint, inizio elaborazione)
+processing   → approved        (worker: auto-approvazione riuscita)
+processing   → skipped         (worker: pseudo non in AutoApprovalRules)
+processing   → failed_permanent (worker: errore non-retriable o MAX_ATTEMPTS raggiunto)
+processing   → processing      (worker: errore retriable, Cloud Tasks riprova)
+```
+
+**REGOLA CRITICA:** Non scrivere mai uno stato terminale (`approved`, `skipped`, `failed_permanent`) su un record già in stato terminale. Il hook `setProcessedAtOnTerminalStatus` è idempotente ma la logica applicativa deve prevenire sovrascritture.
+
+**REGOLA:** Il campo `processedAt` non va mai impostato manualmente. È gestito esclusivamente dall'hook `setProcessedAtOnTerminalStatus` in `src/hooks/setProcessedAtOnTerminalStatus.ts`.
+
+---
+
+## Variabili d'ambiente richieste
+
+```bash
+CLOUD_TASKS_QUEUE_ABSENCES      # nome coda (es. queue-absences-staging)
+CLOUD_TASKS_LOCATION            # regione (es. europe-west8) — NON GCP_LOCATION
+GCP_PROJECT_ID                  # ID progetto GCP
+WORKER_BASE_URL                 # URL base server (es. https://middleware-xxx.run.app)
+CLOUD_TASKS_SERVICE_ACCOUNT     # email SA per verifica OIDC
+WORKER_DEV_SECRET               # solo sviluppo locale
+FURIOUS_EMAIL                   # credenziali Furious API
+FURIOUS_PASSWORD                # credenziali Furious API
+BOOTSTRAP_ADMIN_EMAIL           # destinatario notifiche failed_permanent
+```
+
+**ATTENZIONE:** La variabile per la regione Cloud Tasks è `CLOUD_TASKS_LOCATION`, non `GCP_LOCATION`. Usare il nome sbagliato causa silent fallback a `europe-west1` (vedi DECISIONS.md).
+
+---
+
+## Errori comuni da evitare
+
+1. **Non chiamare `CloudTasksClient` direttamente** — usare solo `enqueueAbsenceTask()` da `src/lib/gcp/tasks.ts` (Pattern Adapter irrevocabile).
+2. **Non loggare `rawPayload` su Pino/Cloud Logging** — contiene dati personali. Va solo su Postgres (`AbsenceLog.rawPayload`).
+3. **Non impostare `processedAt` manualmente** — è gestito dall'hook.
+4. **Non rispondere `5xx` per `failed_permanent`** — causa loop infiniti di retry.
+5. **Non rispondere `5xx` al webhook di Furious** — causa duplicati in `AbsenceLog`.
+6. **Non invertire l'ordine DB → Cloud Tasks nel webhook** — il record deve esistere prima dell'accodamento.

@@ -1,0 +1,65 @@
+---
+description: Pattern e regole per il flusso fatture passive (Starty → Furious). TODO Release 2 — stub. Leggere prima di toccare InvoiceLog, InvoicePendingReview, o qualsiasi file src/workers/invoice/*.
+globs:
+  - src/endpoints/invoiceWebhook.ts
+  - src/endpoints/invoiceWorkerEndpoint.ts
+  - src/workers/invoice/**
+  - src/collections/InvoiceLog.ts
+  - src/collections/InvoicePendingReview.ts
+alwaysApply: false
+---
+
+# Regole flusso fatture passive
+
+> **TODO: Release 2**
+>
+> Questo file è uno stub. Le regole verranno definite durante la Sottofase C.
+> Prima di implementare qualsiasi cosa relativa al flusso fatture, completare
+> questo file seguendo il formato di `060-absence-flow.mdc` come riferimento.
+
+---
+
+## Stato attuale (Sottofase A)
+
+I seguenti file sono già presenti come stub da A1 e non vanno modificati fino alla Sottofase C:
+
+```
+src/collections/InvoicePendingReview.ts   stub — non toccare fino a C1
+src/collections/InvoiceLog.ts             stub — non toccare fino a C1
+src/lib/gcp/tasks.ts                      enqueueInvoiceTask() già implementato
+```
+
+---
+
+## Regole provvisorie (valide fino alla definizione completa in C1)
+
+1. **Non implementare** alcuna logica nel worker fatture prima di aver completato la documentazione in `docs/project/060-invoice-flow.md`.
+2. **Non modificare** `InvoiceLog.ts` e `InvoicePendingReview.ts` — sono stub intenzionali.
+3. **Non chiamare** `enqueueInvoiceTask()` da nessun endpoint in produzione — la coda `queue-invoices` non ha ancora un worker attivo.
+4. **Seguire** esattamente gli stessi pattern di `060-absence-flow.mdc` per l'architettura del flusso quando si implementa C1–C4.
+
+---
+
+## Riferimento API Furious — acquisti
+
+```typescript
+// POST /api/v2/purchase/ — da implementare in C3
+// Campi obbligatori: cost_name, amount_ht, vat, currency, project_id
+
+// POST /api/v2/purchase-partial/ — da implementare in C4
+// Per pagamenti a tranche
+```
+
+---
+
+## Da definire in Sottofase C
+
+- [ ] Approccio lettura Starty: API REST vs connessione DB diretta
+- [ ] Schema tabella transcodifica ID Starty a ID Furious
+- [ ] State machine `InvoiceLog` completa
+- [ ] Logica deduplicazione su retry
+- [ ] Gestione `pending_review`: quando una fattura richiede approvazione umana?
+- [ ] Pattern autenticazione Starty (webhook push vs job pull)
+
+Aggiornare questo file e `docs/project/060-invoice-flow.md` all'inizio della Sottofase C,
+prima di scrivere una riga di codice.
