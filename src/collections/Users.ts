@@ -1,4 +1,6 @@
 import type { CollectionConfig } from 'payload'
+import { sendInviteEmailHook } from './hooks/sendInviteEmailHook'
+import { afterLoginHook } from './hooks/afterLoginHook'
 
 export const Users: CollectionConfig = {
   slug: 'users',
@@ -28,6 +30,7 @@ export const Users: CollectionConfig = {
         { label: 'Admin', value: 'admin' },
         { label: 'HR', value: 'hr' },
         { label: 'Amministrazione', value: 'amministrazione' },
+        // 'sistema' NON appare qui — è un service account tecnico
       ],
       access: {
         update: ({ req: { user } }) => (user as { role?: string } | null)?.role === 'admin',
@@ -54,5 +57,35 @@ export const Users: CollectionConfig = {
         description: 'Stato account. Gli utenti sospesi non possono accedere.',
       },
     },
+    {
+      name: 'invitedAt',
+      type: 'date',
+      admin: {
+        readOnly: true,
+        description: 'Data di creazione del record di invito.',
+      },
+    },
+    {
+      name: 'invitedBy',
+      type: 'relationship',
+      relationTo: 'users',
+      admin: {
+        readOnly: true,
+        description: 'Amministratore che ha creato l\'invito.',
+      },
+    },
   ],
+  hooks: {
+    afterChange: [sendInviteEmailHook],
+    beforeLogin: [
+      async ({ user }) => {
+        // Blocca utenti sospesi — il JWT non viene emesso
+        if ((user as { status?: string }).status === 'suspended') {
+          throw new Error('Account sospeso. Contattare un amministratore.')
+        }
+        return user
+      },
+    ],
+    afterLogin: [afterLoginHook],
+  },
 }

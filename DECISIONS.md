@@ -138,3 +138,103 @@ L'interfaccia pubblica rimane tipizzata — il cast è confinato in `monitoring/
 - `@sentry/node` — error tracking
 - `pino` — structured logging
 - `google-auth-library` — verifica OIDC token Cloud Tasks
+
+---
+
+## [2026-03-03] — Task A3: Plugin OAuth2 — scelta `payload-oauth2` e gestione closed-by-default
+
+**Problema:**
+La specifica `030-auth-roles.md` indica `payload-plugin-oauth` (thgh) o `@payloadcms/plugin-sso`
+come opzioni per Google SSO. Al momento dell'implementazione:
+- `@payloadcms/plugin-sso` non è ancora disponibile per PayloadCMS 3.x
+- `payload-plugin-oauth` (thgh) non è compatibile con Payload 3.x
+- `payload-oauth2` (WilsonLe) è compatibile con Payload 3.x, zero dipendenze, testato con Google
+
+**Decisione:**
+Utilizzato `payload-oauth2` v1.0.20 come plugin OAuth2.
+
+**Problema secondario — closed by default con `payload-oauth2`:**
+Il plugin non espone una funzione `findOrCreateUser()` personalizzabile come descritto
+nelle specifiche. La logica è interna al callback endpoint. Le opzioni disponibili sono:
+- `onUserNotFoundBehavior: 'error'` — lancia errore se utente non trovato
+- `onUserNotFoundBehavior: 'create'` — crea utente automaticamente
+
+Con `onUserNotFoundBehavior: 'error'`, il bootstrap admin al primo accesso riceve un
+errore perché il record non esiste ancora. Non c'è un hook intermedio tra `getUserInfo`
+e la ricerca nel DB.
+
+**Soluzione adottata:**
+La logica "closed by default" è implementata direttamente in `getUserInfo()`, che ha
+accesso a `req.payload`. In `getUserInfo()`:
+1. Si verifica il dominio email (difesa in profondità)
+2. Si cerca il record nel DB
+3. Se non trovato: si crea il bootstrap admin (solo per `BOOTSTRAP_ADMIN_EMAIL`)
+   oppure si lancia un errore per tutti gli altri
+4. Si restituisce solo `{ email, sub }` — nessun campo che sovrascriva `role`/`status`
+
+Il plugin aggiorna l'utente esistente con i dati di `getUserInfo` — restituendo solo
+`email` e `sub`, i campi `role`, `status`, `name` non vengono mai sovrascritti.
+
+La promozione `invited` → `active` e la promozione bootstrap admin avvengono
+nell'hook `afterLogin` sulla collection Users.
+
+**Deviazione dalla specifica:**
+La specifica prevedeva la logica in `findOrCreateUser()` (API di `payload-plugin-oauth`).
+Con `payload-oauth2` la stessa logica è in `getUserInfo()` + hook `afterLogin`.
+Il comportamento finale è identico.
+
+**File creati:**
+- `src/lib/auth/googleOAuth.ts` — configurazione plugin OAuth2 con logica closed-by-default
+- `src/collections/hooks/sendInviteEmailHook.ts` — hook afterChange per mail di invito
+- `src/collections/hooks/afterLoginHook.ts` — hook afterLogin per promozione invited→active
+- `src/services/mailer.ts` — Gmail API con domain-wide delegation
+- `src/scripts/generate-sistema-jwt.ts` — script one-shot per JWT service account sistema
+
+**File aggiornati:**
+- `src/collections/Users.ts` — aggiunto `invitedAt`, `invitedBy`, hooks `beforeLogin`/`afterLogin`/`afterChange`
+- `src/payload.config.ts` — aggiunto plugin OAuth2, hook `onInit` per service account sistema
+- `.env.example` — aggiunto tutte le variabili d'ambiente OAuth2/Gmail
+
+**Dipendenze aggiunte:**
+- `payload-oauth2` — plugin OAuth2 per PayloadCMS 3.x
+- `googleapis` — Gmail API per invio mail di invito
+
+---
+
+## [2026-03-03] — Bootstrap admin: DB vuoto e creazione service account sistema
+
+**Problema:**
+Con il sistema in modalità "closed by default", al primo avvio il DB è vuoto. Nessun
+utente può fare login perché `getUserInfo()` cerca il record nel DB e non lo trova.
+Il bootstrap admin non ha nessun admin che lo possa invitare — è il classico problema
+del pollo e dell'uovo.
+
+Inoltre, `onInit` in `payload.config.ts` creava il service account `sistema` ad ogni
+avvio, ma questo causava un problema: se il DB è vuoto e `onInit` viene eseguito prima
+del primo login, il conteggio degli utenti non è più zero e il flusso bootstrap non
+si attiva correttamente.
+
+**Decisione:**
+Spostata tutta la logica di bootstrap in `getUserInfo()` dentro `src/lib/auth/googleOAuth.ts`.
+La funzione ora distingue tre casi:
+
+1. **DB vuoto + email === BOOTSTRAP_ADMIN_EMAIL**: crea admin + service account `sistema`
+   in un'unica transazione atomica, poi procede con il login.
+2. **DB vuoto + email diversa**: errore "primo login riservato all'amministratore bootstrap".
+3. **DB non vuoto**: applica la logica closed-by-default esistente (nessuna modifica).
+
+Rimosso `onInit` da `payload.config.ts` — la creazione del service account `sistema`
+avviene ora contestualmente al bootstrap, garantendo che i due account esistano sempre
+insieme e che il conteggio utenti sia coerente con lo stato del sistema.
+
+**Motivazione:**
+- `getUserInfo()` ha accesso a `req.payload` e può interrogare il DB
+- Il conteggio `payload.count()` è O(1) e non impatta le performance
+- La creazione atomica di admin + sistema garantisce che non esista mai uno stato
+  intermedio con solo l'admin o solo il sistema
+- Rimuovere `onInit` elimina la dipendenza dall'ordine di esecuzione tra avvio server
+  e primo login
+
+**File aggiornati:**
+- `src/lib/auth/googleOAuth.ts` — logica bootstrap con `payload.count()` + creazione admin + sistema
+- `src/payload.config.ts` — rimosso `onInit`

@@ -11,6 +11,7 @@ import { AutoApprovalRules } from './collections/AutoApprovalRules'
 import { AbsenceLog } from './collections/AbsenceLog'
 import { InvoicePendingReview } from './collections/InvoicePendingReview'
 import { InvoiceLog } from './collections/InvoiceLog'
+import { googleOAuthPlugin } from './lib/auth/googleOAuth'
 
 const filename = fileURLToPath(import.meta.url)
 const dirname = path.dirname(filename)
@@ -34,5 +35,5 @@ export default buildConfig({
     },
   }),
   sharp,
-  plugins: [],
+  plugins: [googleOAuthPlugin],
 })

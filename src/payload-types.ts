@@ -143,6 +143,14 @@ export interface User {
    * Stato account. Gli utenti sospesi non possono accedere.
    */
   status: 'invited' | 'active' | 'suspended';
+  /**
+   * Data di creazione del record di invito.
+   */
+  invitedAt?: string | null;
+  /**
+   * Amministratore che ha creato l'invito.
+   */
+  invitedBy?: (number | null) | User;
   updatedAt: string;
   createdAt: string;
   collection: 'users';
@@ -422,6 +430,8 @@ export interface UsersSelect<T extends boolean = true> {
   name?: T;
   role?: T;
   status?: T;
+  invitedAt?: T;
+  invitedBy?: T;
   updatedAt?: T;
   createdAt?: T;
 }
