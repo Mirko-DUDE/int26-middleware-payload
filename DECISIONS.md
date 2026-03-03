@@ -238,3 +238,25 @@ insieme e che il conteggio utenti sia coerente con lo stato del sistema.
 **File aggiornati:**
 - `src/lib/auth/googleOAuth.ts` — logica bootstrap con `payload.count()` + creazione admin + sistema
 - `src/payload.config.ts` — rimosso `onInit`
+
+---
+
+## [2026-03-03] — Rinomina `PAYLOAD_PUBLIC_SERVER_URL` → `SERVER_URL`
+
+**Problema:**
+La variabile d'ambiente era nominata `PAYLOAD_PUBLIC_SERVER_URL`, che richiama la
+convenzione Next.js `NEXT_PUBLIC_*` per variabili esposte al browser. PayloadCMS in
+questo progetto è usato esclusivamente come backend/backoffice: nessun componente
+React client-side legge questa variabile. Tutti gli usi sono server-side (hook Node.js,
+plugin OAuth2, link nelle mail di invito).
+
+**Decisione:**
+Rinominata in `SERVER_URL` — nome più corto, senza implicazioni di visibilità browser.
+
+**File aggiornati:**
+- `src/lib/auth/googleOAuth.ts`
+- `src/collections/hooks/sendInviteEmailHook.ts`
+- `.env.example`
+- `.cursor/rules/030-auth-roles.mdc`
+- `docs/project/030-auth-roles.md`
+- `docs/project/050-gcp-infrastructure.md`

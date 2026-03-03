@@ -8,7 +8,7 @@ export const sendInviteEmailHook: CollectionAfterChangeHook = async ({ doc, oper
   // Non invia invito al service account sistema
   if ((doc as { role?: string }).role === 'sistema') return doc
 
-  const loginUrl = `${process.env.PAYLOAD_PUBLIC_SERVER_URL}/api/users/oauth/google`
+  const loginUrl = `${process.env.SERVER_URL}/api/users/oauth/google`
 
   try {
     await sendMail({

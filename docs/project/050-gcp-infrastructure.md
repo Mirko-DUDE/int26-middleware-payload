@@ -51,7 +51,7 @@ NODE_ENV=production          # o 'staging'
 PORT=3000
 LOG_LEVEL=info               # o 'warn' in produzione
 DATABASE_URL=                # connection string Cloud SQL (via Cloud SQL Auth Proxy)
-PAYLOAD_PUBLIC_SERVER_URL=   # URL pubblico del servizio Cloud Run
+SERVER_URL=                  # URL pubblico del servizio Cloud Run
 CLOUD_TASKS_QUEUE_ABSENCES=  # nome coda: 'queue-absences'
 CLOUD_TASKS_QUEUE_INVOICES=  # nome coda: 'queue-invoices'
 GCP_PROJECT_ID=              # ID progetto GCP
@@ -303,14 +303,14 @@ Si usa un **singolo progetto GCP** con prefissi di ambiente nelle risorse. Quest
 ```bash
 # STAGING
 NODE_ENV=staging
-PAYLOAD_PUBLIC_SERVER_URL=https://middleware-staging-xxx-ew.a.run.app
+SERVER_URL=https://middleware-staging-xxx-ew.a.run.app
 CLOUD_TASKS_QUEUE_ABSENCES=queue-absences-staging
 CLOUD_TASKS_QUEUE_INVOICES=queue-invoices-staging
 WORKER_BASE_URL=https://middleware-staging-xxx-ew.a.run.app
 
 # PRODUZIONE
 NODE_ENV=production
-PAYLOAD_PUBLIC_SERVER_URL=https://middleware-prod-xxx-ew.a.run.app  # o dominio custom
+SERVER_URL=https://middleware-prod-xxx-ew.a.run.app  # o dominio custom
 CLOUD_TASKS_QUEUE_ABSENCES=queue-absences-prod
 CLOUD_TASKS_QUEUE_INVOICES=queue-invoices-prod
 WORKER_BASE_URL=https://middleware-prod-xxx-ew.a.run.app

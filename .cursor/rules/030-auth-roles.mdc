@@ -336,7 +336,7 @@ if (req.user?.status === 'active') { ... }
 |----------------------------------|---------|----------------------------------------------------|
 | `GOOGLE_CLIENT_ID`               | Runtime | OAuth2 app Google                                  |
 | `GOOGLE_CLIENT_SECRET`           | Secret  | OAuth2 secret Google                               |
-| `PAYLOAD_PUBLIC_SERVER_URL`      | Runtime | URL pubblico del server (per callback OAuth e link invito) |
+| `SERVER_URL`                     | Runtime | URL pubblico del server (per callback OAuth e link invito) |
 | `ALLOWED_EMAIL_DOMAIN`           | Runtime | Es. `azienda.it` — restrizione dominio             |
 | `BOOTSTRAP_ADMIN_EMAIL`          | Runtime | Email del primo admin — promozione automatica al login |
 | `SISTEMA_EMAIL`                  | Runtime | Email del service account sistema                  |

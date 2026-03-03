@@ -59,7 +59,7 @@ export default buildConfig({
       clientSecret: process.env.GOOGLE_CLIENT_SECRET,
       authorizationURL: 'https://accounts.google.com/o/oauth2/v2/auth',
       tokenURL: 'https://oauth2.googleapis.com/token',
-      callbackURL: `${process.env.PAYLOAD_PUBLIC_SERVER_URL}/oauth2/callback`,
+      callbackURL: `${process.env.SERVER_URL}/oauth2/callback`,
       scope: 'openid email profile',
 
       async userinfo(accessToken) {
@@ -164,7 +164,7 @@ export default buildConfig({
 ```env
 GOOGLE_CLIENT_ID=...
 GOOGLE_CLIENT_SECRET=...
-PAYLOAD_PUBLIC_SERVER_URL=https://middleware.azienda.it
+SERVER_URL=https://middleware.azienda.it
 ALLOWED_EMAIL_DOMAIN=azienda.it
 BOOTSTRAP_ADMIN_EMAIL=mario@azienda.it
 SISTEMA_EMAIL=sistema@azienda.it
@@ -450,7 +450,7 @@ export const sendInviteEmailHook: CollectionAfterChangeHook = async ({
   // Non invia invito al service account sistema
   if (doc.role === 'sistema') return doc
 
-  const loginUrl = `${process.env.PAYLOAD_PUBLIC_SERVER_URL}/oauth2/authorize`
+  const loginUrl = `${process.env.SERVER_URL}/oauth2/authorize`
 
   await sendMail({
     to: doc.email,

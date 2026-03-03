@@ -23,7 +23,7 @@ export const googleOAuthPlugin = OAuth2Plugin({
 
   strategyName: 'google',
   useEmailAsIdentity: true,
-  serverURL: process.env.PAYLOAD_PUBLIC_SERVER_URL || 'http://localhost:3000',
+  serverURL: process.env.SERVER_URL || 'http://localhost:3000',
   clientId: process.env.GOOGLE_CLIENT_ID || '',
   clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
   authorizePath: '/oauth/google',

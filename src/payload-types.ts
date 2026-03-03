@@ -67,12 +67,12 @@ export interface Config {
   };
   blocks: {};
   collections: {
-    users: User;
     media: Media;
     'auto-approval-rules': AutoApprovalRule;
     'absence-log': AbsenceLog;
     'invoice-pending-review': InvoicePendingReview;
     'invoice-log': InvoiceLog;
+    users: User;
     'payload-kv': PayloadKv;
     'payload-locked-documents': PayloadLockedDocument;
     'payload-preferences': PayloadPreference;
@@ -80,12 +80,12 @@ export interface Config {
   };
   collectionsJoins: {};
   collectionsSelect: {
-    users: UsersSelect<false> | UsersSelect<true>;
     media: MediaSelect<false> | MediaSelect<true>;
     'auto-approval-rules': AutoApprovalRulesSelect<false> | AutoApprovalRulesSelect<true>;
     'absence-log': AbsenceLogSelect<false> | AbsenceLogSelect<true>;
     'invoice-pending-review': InvoicePendingReviewSelect<false> | InvoicePendingReviewSelect<true>;
     'invoice-log': InvoiceLogSelect<false> | InvoiceLogSelect<true>;
+    users: UsersSelect<false> | UsersSelect<true>;
     'payload-kv': PayloadKvSelect<false> | PayloadKvSelect<true>;
     'payload-locked-documents': PayloadLockedDocumentsSelect<false> | PayloadLockedDocumentsSelect<true>;
     'payload-preferences': PayloadPreferencesSelect<false> | PayloadPreferencesSelect<true>;
@@ -124,36 +124,6 @@ export interface UserAuthOperations {
     email: string;
     password: string;
   };
-}
-/**
- * This interface was referenced by `Config`'s JSON-Schema
- * via the `definition` "users".
- */
-export interface User {
-  id: number;
-  /**
-   * Nome visualizzato (valorizzato al primo login Google).
-   */
-  name?: string | null;
-  /**
-   * Ruolo operativo. Determina le aree visibili e le azioni permesse.
-   */
-  role: 'admin' | 'hr' | 'amministrazione';
-  /**
-   * Stato account. Gli utenti sospesi non possono accedere.
-   */
-  status: 'invited' | 'active' | 'suspended';
-  /**
-   * Data di creazione del record di invito.
-   */
-  invitedAt?: string | null;
-  /**
-   * Amministratore che ha creato l'invito.
-   */
-  invitedBy?: (number | null) | User;
-  updatedAt: string;
-  createdAt: string;
-  collection: 'users';
 }
 /**
  * This interface was referenced by `Config`'s JSON-Schema
@@ -334,6 +304,38 @@ export interface InvoiceLog {
 }
 /**
  * This interface was referenced by `Config`'s JSON-Schema
+ * via the `definition` "users".
+ */
+export interface User {
+  id: number;
+  /**
+   * Nome visualizzato (valorizzato al primo login Google).
+   */
+  name?: string | null;
+  /**
+   * Ruolo operativo. Determina le aree visibili e le azioni permesse.
+   */
+  role: 'admin' | 'hr' | 'amministrazione';
+  /**
+   * Stato account. Gli utenti sospesi non possono accedere.
+   */
+  status: 'invited' | 'active' | 'suspended';
+  /**
+   * Data di creazione del record di invito.
+   */
+  invitedAt?: string | null;
+  /**
+   * Amministratore che ha creato l'invito.
+   */
+  invitedBy?: (number | null) | User;
+  sub?: string | null;
+  email: string;
+  updatedAt: string;
+  createdAt: string;
+  collection: 'users';
+}
+/**
+ * This interface was referenced by `Config`'s JSON-Schema
  * via the `definition` "payload-kv".
  */
 export interface PayloadKv {
@@ -357,10 +359,6 @@ export interface PayloadLockedDocument {
   id: number;
   document?:
     | ({
-        relationTo: 'users';
-        value: number | User;
-      } | null)
-    | ({
         relationTo: 'media';
         value: number | Media;
       } | null)
@@ -379,6 +377,10 @@ export interface PayloadLockedDocument {
     | ({
         relationTo: 'invoice-log';
         value: number | InvoiceLog;
+      } | null)
+    | ({
+        relationTo: 'users';
+        value: number | User;
       } | null);
   globalSlug?: string | null;
   user: {
@@ -421,19 +423,6 @@ export interface PayloadMigration {
   batch?: number | null;
   updatedAt: string;
   createdAt: string;
-}
-/**
- * This interface was referenced by `Config`'s JSON-Schema
- * via the `definition` "users_select".
- */
-export interface UsersSelect<T extends boolean = true> {
-  name?: T;
-  role?: T;
-  status?: T;
-  invitedAt?: T;
-  invitedBy?: T;
-  updatedAt?: T;
-  createdAt?: T;
 }
 /**
  * This interface was referenced by `Config`'s JSON-Schema
@@ -512,6 +501,21 @@ export interface InvoiceLogSelect<T extends boolean = true> {
   lastError?: T;
   processedAt?: T;
   rawPayload?: T;
+  updatedAt?: T;
+  createdAt?: T;
+}
+/**
+ * This interface was referenced by `Config`'s JSON-Schema
+ * via the `definition` "users_select".
+ */
+export interface UsersSelect<T extends boolean = true> {
+  name?: T;
+  role?: T;
+  status?: T;
+  invitedAt?: T;
+  invitedBy?: T;
+  sub?: T;
+  email?: T;
   updatedAt?: T;
   createdAt?: T;
 }
