@@ -1,0 +1,266 @@
+---
+description: Pattern e regole TypeScript per tutti i worker del sistema. Si applica a qualsiasi file in src/workers/** e src/endpoints/workers/**
+globs:
+  - src/workers/**/*.ts
+  - src/endpoints/workers/**/*.ts
+  - src/lib/tokenManager.ts
+  - src/lib/apiClient.ts
+  - src/lib/logger.ts
+alwaysApply: false
+---
+
+# 020 — Worker Patterns
+
+## Firma obbligatoria
+
+Ogni funzione worker DEVE rispettare questo tipo. Nessuna eccezione.
+
+```typescript
+// CORRETTO
+export const myWorker: WorkerFn = async (ctx) => {
+  const { payload, logger } = ctx
+  // ...
+  return { success: true, message: '...', retriable: false }
+}
+
+// SBAGLIATO — firma custom non permessa
+export async function myWorker(req: Request, res: Response) { ... }
+```
+
+## Tipi core — usare sempre questi, non ridefinirli
+
+```typescript
+import type {
+  WorkerFn,
+  WorkerContext,
+  WorkerResult,
+  WorkerTaskPayload,
+  TaskStatus,
+} from '@/workers/types'
+```
+
+## Runner — mai gestire la risposta HTTP dentro il worker
+
+Il worker restituisce `WorkerResult`. È il **runner** (`src/workers/runner.ts`) che traduce il risultato in HTTP. Il worker non tocca mai `res`.
+
+```typescript
+// CORRETTO — il worker non sa nulla di HTTP
+return { success: false, message: 'Risorsa non trovata', retriable: false }
+
+// SBAGLIATO — il worker non deve chiamare res direttamente
+res.status(404).json({ error: '...' })
+```
+
+## Codici HTTP di risposta — contratto con Cloud Tasks
+
+```typescript
+// Nel runner — NON modificare questa logica
+if (result.success)           → res.status(200)  // completato
+if (!result.retriable)        → res.status(200)  // fallito definitivo, non riprovare
+if (result.retriable)         → res.status(500)  // errore transitorio, riprova
+catch (unhandledError)        → res.status(500)  // sempre 5xx per retry
+// MAI usare 4xx — Cloud Tasks li tratta come 200 (completato)
+```
+
+## Ciclo di vita del task — stati e transizioni
+
+```
+received → queued → processing → completed
+                              ↘ failed        (non-retriable)
+                              ↘ processing    (retriable, ritenta)
+                                    ↘ dead    (attempt >= 5)
+```
+
+Chiamare `updateTaskStatus()` ad ogni transizione:
+
+```typescript
+import { updateTaskStatus } from '@/lib/taskLogs'
+
+// All'inizio del worker
+await updateTaskStatus(taskId, 'processing', { attempt, startedAt: new Date().toISOString() })
+
+// Al completamento
+await updateTaskStatus(taskId, 'completed', { externalId, completedAt: new Date().toISOString() })
+
+// Errore non-retriable
+await updateTaskStatus(taskId, 'failed', { message, failedAt: new Date().toISOString() })
+
+// Dead (gestito dal runner, non dal worker)
+await updateTaskStatus(taskId, 'dead', { lastError, totalAttempts: attempt })
+```
+
+## Numero di tentativo — lettura dall'header Cloud Tasks
+
+```typescript
+// 0-based nell'header → converti sempre in 1-based
+const retryCount = parseInt(req.headers['x-cloudtasks-taskretrycount'] as string ?? '0', 10)
+const attempt = retryCount + 1
+
+// Dead letter: dopo 5 tentativi non si riprova
+const isDead = attempt >= 5
+```
+
+## Backoff configurato su Cloud Tasks (NON nel codice)
+
+| Tentativo | Attesa |
+|-----------|--------|
+| 1 → 2 | 30s |
+| 2 → 3 | 2min |
+| 3 → 4 | 8min |
+| 4 → 5 | 30min |
+| 5 → dead | 1h |
+
+Moltiplicatore ×4. Non replicare questa logica nel codice worker.
+
+## Token API — SEMPRE via getToken(), MAI env vars
+
+```typescript
+import { getToken, invalidateToken } from '@/lib/tokenManager'
+import { callWithToken } from '@/lib/apiClient'
+
+// CORRETTO
+const result = await callWithToken<FuriousAbsenceResponse>(
+  'furious-api-token',                          // nome del secret in Secret Manager
+  (token) => fetch(url, {
+    headers: { 'F-Auth-Token': token },
+  })
+)
+
+// SBAGLIATO — env vars vietate per token API
+const token = process.env.FURIOUS_TOKEN
+```
+
+### getToken — cache + rinnovo automatico su 401
+
+```typescript
+// getToken legge da Secret Manager con cache in-memory (TTL default 55min)
+export async function getToken(secretName: string, ttlMs = 55 * 60 * 1000): Promise<string>
+
+// callWithToken gestisce automaticamente il rinnovo su 401
+// 1. Chiama con token cached
+// 2. Se 401 → invalida cache → rilegge da Secret Manager → richiama
+// 3. Se ancora 401 → lancia errore (retriable: true)
+export async function callWithToken<T>(secretName: string, fn: (token: string) => Promise<Response>): Promise<T>
+
+// Invalidazione manuale (raro — normalmente gestita da callWithToken)
+invalidateToken('furious-api-token')
+```
+
+### Nomi dei secret in Secret Manager
+
+| Sistema | Nome secret |
+|---------|-------------|
+| Furious API | `furious-api-token` |
+| Starty (futuro) | `starty-api-token` |
+| Cloud Tasks OIDC audience | variabile d'ambiente `WORKER_AUDIENCE_URL` (non è un token) |
+
+## Logging strutturato — usare ctx.logger, MAI console.log
+
+```typescript
+// CORRETTO
+ctx.logger.info('external_api_called', { endpoint, method: 'PUT', statusCode: 200 })
+ctx.logger.warn('worker_failed_retriable', { message: err.message, attempt })
+ctx.logger.error('worker_dead', { taskId, totalAttempts: attempt, lastError: err.message })
+
+// SBAGLIATO
+console.log('chiamata API fatta')
+console.error(err)
+```
+
+### Eventi di log standard — usare questi nomi esatti
+
+```typescript
+// Livello info
+'worker_started'         // { attempt }
+'worker_completed'       // { externalId, durationMs }
+'external_api_called'    // { endpoint, method, statusCode }
+
+// Livello warn
+'worker_failed_retriable'     // { message, attempt }
+'worker_failed_non_retriable' // { message, reason }
+
+// Livello error
+'worker_dead'            // { taskId, totalAttempts, lastError }
+'token_fetch_error'      // { secretName, message }
+```
+
+Il logger usa il formato Pino con `severity` (compatibile Cloud Logging). Ogni child logger ha `taskType` e `taskId` come campi fissi.
+
+## Classificazione errori
+
+```typescript
+// Errori RETRIABLE → return { success: false, retriable: true }
+// - Timeout di rete
+// - HTTP 5xx da sistema esterno
+// - HTTP 429 (rate limit)
+// - HTTP 401 dopo rinnovo token (una sola volta)
+
+// Errori NON-RETRIABLE → return { success: false, retriable: false }
+// - HTTP 404 (risorsa non trovata)
+// - HTTP 400 (payload malformato)
+// - Validazione locale fallita (campo obbligatorio mancante)
+// - ID non trovato in tabella di transcodifica
+
+// Esempio pratico
+try {
+  const result = await callWithToken('furious-api-token', ...)
+  return { success: true, message: 'OK', retriable: false, externalId: result.id }
+} catch (err) {
+  if (err instanceof ApiError && err.status === 404) {
+    return { success: false, message: `Assenza ${absenceId} non trovata`, retriable: false }
+  }
+  // Qualsiasi altro errore: ritenta
+  return { success: false, message: err.message, retriable: true }
+}
+```
+
+## Protezione endpoint — verifyCloudTasksRequest() sempre primo
+
+```typescript
+// src/endpoints/workers/myWorker.ts
+export const myWorkerHandler: PayloadHandler = async (req, res) => {
+  // PRIMA di qualsiasi altra cosa
+  const authError = await verifyCloudTasksRequest(req)
+  if (authError) return res.status(403).json({ error: authError })
+
+  return runWorker(req, res, myWorkerFn)
+}
+```
+
+## Struttura directory
+
+```
+src/
+├── workers/
+│   ├── types.ts                  # Tipi condivisi (WorkerFn, WorkerResult, ecc.)
+│   ├── runner.ts                 # Runner generico — NON modificare per ogni worker
+│   ├── absenceApproval.ts        # Worker specifico
+│   └── invoiceSync.ts            # Worker specifico
+├── endpoints/
+│   └── workers/
+│       ├── absence.ts            # Endpoint HTTP → chiama runner + absenceApprovalWorker
+│       └── invoice.ts
+└── lib/
+    ├── tokenManager.ts           # getToken, invalidateToken
+    ├── apiClient.ts              # callWithToken
+    ├── logger.ts                 # createWorkerLogger
+    ├── taskLogs.ts               # updateTaskStatus
+    └── cloudTasks.ts             # verifyCloudTasksRequest, enqueueTask
+```
+
+## Flusso asincrono definitivo (NON modificare)
+
+```
+Furious webhook → POST /api/webhooks/furious/...
+  → 200 OK immediato a Furious (< 200ms)
+  → Salvataggio record DB (status: 'received')
+  → enqueueTask() su Cloud Tasks (status: 'queued')
+
+Cloud Tasks → POST /api/workers/... (endpoint interno)
+  → verifyCloudTasksRequest()
+  → runWorker() → WorkerFn
+  → updateTaskStatus()
+  → res.status(200 | 500)
+```
+
+Non aggiungere logica di business nel webhook handler. Non processare sincrono nel webhook handler.

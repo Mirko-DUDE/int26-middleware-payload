@@ -52,8 +52,8 @@
 Da completare in ordine, prima di qualsiasi cosa specifica al flusso assenze:
 
 - [x] **A1 — Schema dati PayloadCMS** ✓ completato
-- [ ] **A2 — Architettura dei Worker** ← PROSSIMO
-- [ ] **A3 — Sistema autenticazione e ruoli**
+- [x] **A2 — Architettura dei Worker** ✓ completato
+- [ ] **A3 — Sistema autenticazione e ruoli** ← PROSSIMO
 - [ ] **A4 — Sistema logging e osservabilità**
 - [ ] **A5 — Infrastruttura GCP — specifiche**
 
@@ -145,6 +145,94 @@ Ogni tipologia di media ha una Collection dedicata con bucket GCS proprio.
 Plugin: `@payloadcms/storage-gcs` configurato per-collection in `payload.config.ts`.
 Il bucket viene **sempre** letto da env vars — mai hardcoded nel codice.
 Aggiungere una tipologia = aggiungere Collection slug + env var + voce in `gcsStorage`.
+
+### Interfaccia standard Worker — DEFINITIVA (A2)
+
+Ogni funzione worker rispetta il tipo `WorkerFn` definito in `src/workers/types.ts`.
+Il worker non tocca mai `req`/`res` HTTP direttamente: riceve un `WorkerContext` e
+restituisce un `WorkerResult`. La traduzione HTTP è delegata al runner generico.
+
+```typescript
+// Firma obbligatoria — non derogare
+type WorkerFn = (ctx: WorkerContext) => Promise<WorkerResult>
+
+interface WorkerResult {
+  success: boolean
+  message: string
+  externalId?: string
+  retriable: boolean   // false → rispondere 200 anche in caso di errore
+}
+```
+
+Dettaglio completo in `docs/project/020-workers.md` e `.cursor/rules/020-worker-patterns.mdc`.
+
+### Pattern `getToken()` / `callWithToken()` — DEFINITIVO (A2)
+
+Tutti i token API (Furious, Starty, futuri) si leggono **esclusivamente** da Google Secret Manager
+tramite `src/lib/tokenManager.ts`. Mai da variabili d'ambiente. La cache in memoria evita
+round-trip ripetuti (TTL default 55 min). Il wrapper `callWithToken<T>()` gestisce
+automaticamente l'invalidazione e il rinnovo su risposta `401`.
+
+```typescript
+// Unico pattern autorizzato per chiamate API esterne
+const result = await callWithToken<T>('nome-secret', (token) => fetch(url, {
+  headers: { 'F-Auth-Token': token }
+}))
+```
+
+Nomi dei secret standard:
+
+| Sistema | Secret Manager key |
+|---------|-------------------|
+| Furious API token | `furious-api-token` |
+| Starty JWT | `starty-jwt-token` |
+
+### Codici HTTP di risposta a Cloud Tasks — DEFINITIVO (A2)
+
+```
+HTTP 200  →  task completato O errore non-retriable (non rischedulare)
+HTTP 5xx  →  errore retriable (Cloud Tasks riprova con backoff)
+MAI 4xx   →  Cloud Tasks tratta i 4xx come 200 (completato), non usarli per segnalare errori
+```
+
+### Classificazione errori retriable vs non-retriable — DEFINITIVA (A2)
+
+| Tipo errore | Retriable | Esempi |
+|-------------|-----------|--------|
+| Timeout di rete | ✅ | Sistema esterno non raggiungibile |
+| HTTP 5xx sistema esterno | ✅ | Furious in manutenzione |
+| HTTP 429 (rate limit) | ✅ | Troppi accessi API |
+| HTTP 401 dopo rinnovo token | ✅ | Token revocato, Secret aggiornato |
+| HTTP 404 (risorsa inesistente) | ❌ | Absence ID non trovato |
+| HTTP 400 (payload malformato) | ❌ | Dati webhook corrotti |
+| Validazione locale fallita | ❌ | Campo obbligatorio mancante |
+| ID non in tabella transcodifica | ❌ | Progetto non mappato |
+
+### Logging strutturato Worker — DEFINITIVO (A2)
+
+I worker usano `ctx.logger` (mai `console.log` diretto). Il logger è un child Pino con
+`taskId` e `taskType` come campi fissi, serializzato in JSON con campo `severity`
+per compatibilità Cloud Logging.
+
+Nomi degli eventi standardizzati (usare questi esatti, non inventarne altri):
+
+| Livello | Evento |
+|---------|--------|
+| `info` | `worker_started`, `worker_completed`, `external_api_called` |
+| `warn` | `worker_failed_retriable`, `worker_failed_non_retriable` |
+| `error` | `worker_dead`, `token_fetch_error` |
+
+### Dead letter e numero tentativi — DEFINITIVO (A2)
+
+L'header Cloud Tasks `X-CloudTasks-TaskRetryCount` è **0-based**.
+Convertire sempre: `attempt = parseInt(header) + 1`.
+Dead letter scatta quando `attempt >= 5`. Lo stato del task diventa `dead` nel DB.
+
+### Protezione endpoint worker — DEFINITIVO (A2)
+
+Ogni endpoint worker chiama `verifyCloudTasksRequest()` come prima operazione,
+prima di qualsiasi logica di business. La verifica usa OIDC token emesso da Cloud Tasks
+e confronta il service account autorizzato.
 
 ---
 
@@ -250,29 +338,31 @@ I ruoli si salvano nel JWT (`saveToJWT: true`) per evitare lookup DB ad ogni ric
 
 ---
 
-## 8. Autenticazione API esterne — da implementare in A2
+## 8. Autenticazione API esterne — implementata in A2
 
 ### Pattern comune (identico per entrambe le API)
+
+Implementato in `src/lib/tokenManager.ts` e `src/lib/apiClient.ts`.
+
 ```typescript
-// Pattern getFuriousToken() / getStartyToken()
-// 1. Legge token e timestamp da Secret Manager
-// 2. Se valido (non scaduto): restituisce token
-// 3. Se scaduto o assente: chiama endpoint auth, salva nuovo token in Secret Manager
-// 4. Se chiamata riceve 401: forza rinnovo, riprova una volta sola
-// 5. Se secondo tentativo fallisce: lancia errore non-retriable
+// Pattern getToken() — cache in memoria + Secret Manager
+// 1. Legge token da cache in-memory (TTL 55 min default)
+// 2. Cache miss/scaduta: legge da Secret Manager
+// 3. Se risposta 401: invalida cache, rilettua da Secret Manager, riprova una sola volta
+// 4. Se secondo tentativo fallisce: lancia errore retriable
 ```
 
 ### Furious Auth
 - Endpoint: `POST /api/v2/auth/`
 - Body: `{ "action": "auth", "data": { "email": "...", "password": "..." } }`
 - Response header: `F-Auth-Token`
-- Token storage: GCP Secret Manager key `furious-auth-token` + `furious-auth-token-expires`
+- Token storage: GCP Secret Manager key `furious-api-token`
 
 ### Starty Auth (3 step)
 - Step 1: BasicAuth → ottieni token ruolo
 - Step 2: token ruolo → seleziona organizzazione → ottieni token org
 - Step 3: token org → JWT finale
-- Token storage: GCP Secret Manager key `starty-jwt-token` + `starty-jwt-expires`
+- Token storage: GCP Secret Manager key `starty-jwt-token`
 
 ---
 
@@ -295,10 +385,16 @@ src/
 ├── hooks/
 │   └── setProcessedAtOnTerminalStatus.ts  # ← CREARE [R1] — hook audit log
 ├── workers/
+│   ├── types.ts             # WorkerFn, WorkerResult, WorkerContext, TaskStatus
+│   ├── runner.ts            # Runner generico — non modificare per ogni worker
 │   ├── absence/
 │   │   └── processAbsence.ts    # [R1]
 │   └── invoice/
 │       └── processInvoice.ts    # [R2]
+├── endpoints/
+│   └── workers/
+│       ├── absence.ts       # endpoint HTTP worker → verifyCloudTasksRequest + runWorker
+│       └── invoice.ts
 ├── webhooks/
 │   ├── furious/
 │   │   └── absence.ts           # endpoint ricezione [R1]
@@ -306,7 +402,7 @@ src/
 │       └── invoice.ts           # endpoint ricezione [R2]
 ├── lib/
 │   ├── furious/
-│   │   ├── auth.ts              # getFuriousToken()
+│   │   ├── auth.ts              # getFuriousToken() — wrappa tokenManager
 │   │   └── api.ts               # chiamate API tipizzate
 │   ├── starty/
 │   │   ├── auth.ts              # getStartyToken()
@@ -314,6 +410,11 @@ src/
 │   ├── gcp/
 │   │   ├── tasks.ts             # enqueueTask() generico
 │   │   └── secrets.ts           # getSecret(), setSecret()
+│   ├── tokenManager.ts          # getToken(), invalidateToken() — cache + Secret Manager
+│   ├── apiClient.ts             # callWithToken<T>() — wrapper con retry su 401
+│   ├── logger.ts                # createWorkerLogger() — Pino child con taskId/taskType
+│   ├── taskLogs.ts              # updateTaskStatus() — aggiorna record TaskLogs in Payload
+│   ├── cloudTasks.ts            # verifyCloudTasksRequest(), enqueueTask()
 │   └── hmac/
 │       └── verify.ts            # verifyWebhookSignature() generico
 └── payload.config.ts            # ← DA AGGIORNARE con nuove collection
@@ -383,30 +484,31 @@ AGENTS.md                      # regole PayloadCMS complete — non sovrascriver
 
 ---
 
-## 13. Task corrente — A2: Architettura dei Worker
+## 13. Task corrente — A3: Sistema autenticazione e ruoli
 
 ### Obiettivo
-Progettare il layer di esecuzione asincrona: come i worker ricevono i task da
-Cloud Tasks, come gestiscono il ciclo di vita (tentativi, backoff, dead letter),
-come comunicano con le API esterne, e come aggiornano i log in PayloadCMS.
+Progettare e documentare il sistema di autenticazione degli utenti (Google SSO) e il
+sistema di controllo degli accessi per ruolo (RBAC). Definire come i ruoli si propagano
+nel JWT, come `permissions.ts` espone le funzioni `canRead`/`canWrite`, e come il
+service account del worker si autentica verso PayloadCMS per scrivere i log.
 
 ### Da produrre
-1. Specifiche `src/workers/absence/processAbsence.ts` — interfaccia, input, output,
-   gestione errori retriable vs non-retriable
-2. Specifiche `src/lib/gcp/tasks.ts` — `enqueueTask()` generico con parametri
-   queue, payload, delay, deduplication key
-3. Pattern idempotency — come il worker verifica se un task è già stato processato
-4. Pattern aggiornamento log — sequenza atomica status update in PayloadCMS
-5. Documento `docs/project/020-workers.md`
-6. Regola `.cursor/rules/020-worker-patterns.mdc`
+1. `docs/project/030-auth-roles.md` — documentazione narrativa per sviluppatori (italiano)
+2. `.cursor/rules/030-auth-roles.mdc` — regole e pattern TypeScript per agenti AI
 
-### Vincoli
-- Il worker deve essere stateless: tutto lo stato è in PayloadCMS DB
-- Idempotency: doppia ricezione dello stesso task non deve causare doppia approvazione
-- Il worker risponde 5xx per errori retriable, 200 per errori non-retriable (blocca retry)
-- Backoff Cloud Tasks assenze: 30s → 2min → 8min → 30min → 1h (×4)
-- Dead Letter Queue dopo 5 tentativi → notifica admin (meccanismo da definire in A4)
+### Il documento deve coprire
+- Configurazione Google OAuth2 in PayloadCMS: plugin da usare, variabili d'ambiente necessarie
+- Restrizione dominio aziendale: come impedire login a utenti fuori dal dominio
+- Struttura di `src/access/permissions.ts`: come definire `canRead`/`canWrite` per ruolo
+- Campo `role` su `Users`: tipo, valori, `saveToJWT: true`, come PayloadCMS lo propaga
+- Service account `sistema`: come il worker scrive su PayloadCMS senza UI (API key o JWT)
+- Pattern di test per accesso: come verificare che un ruolo non acceda a risorse non autorizzate
 
+### Vincoli da rispettare (già decisi)
+- Il ruolo è nel JWT — mai lookup DB per ogni richiesta
+- `permissions.ts` è l'unica fonte di verità — nessuna logica di accesso inline nelle Collection
+- I valori del ruolo sono: `admin` | `hr` | `amministrazione` | `sistema`
+- Il service account worker non usa Google SSO: usa una strategia separata (API key o JWT interno)
 
 ---
 
