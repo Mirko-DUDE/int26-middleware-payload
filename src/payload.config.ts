@@ -22,6 +22,9 @@ export default buildConfig({
     importMap: {
       baseDir: path.resolve(dirname),
     },
+    components: {
+      beforeLogin: ['@/components/GoogleLoginButton'],
+    },
   },
   collections: [Users, Media, AutoApprovalRules, AbsenceLog, InvoicePendingReview, InvoiceLog],
   editor: lexicalEditor(),

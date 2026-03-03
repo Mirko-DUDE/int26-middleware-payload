@@ -241,6 +241,105 @@ insieme e che il conteggio utenti sia coerente con lo stato del sistema.
 
 ---
 
+## [2026-03-03] — getUserInfo() deve restituire role e status per evitare validazione fallita
+
+**Problema:**
+Al primo login (bootstrap) il flusso OAuth completava ma tornava su `/admin/login`.
+Il log mostrava: `OAuth2 login fallito — err: "The following field is invalid: Role"`.
+
+**Causa:**
+Il plugin `payload-oauth2` dopo aver trovato l'utente (creato da `getUserInfo()`) fa sempre
+`payload.update(user.id, data: userInfo)`. Se `userInfo` restituisce solo `{ email, sub }`,
+il campo `role` (required) viene omesso dall'update e PayloadCMS lancia un errore di validazione.
+Il plugin cattura l'eccezione e fa `failureRedirect` → `/admin/login`.
+
+**Soluzione:**
+`getUserInfo()` restituisce ora anche `role` e `status` in tutti i casi:
+- Bootstrap admin (DB vuoto): `{ email, sub, role: 'admin', status: 'active' }`
+- Bootstrap admin (DB non vuoto, record mancante): `{ email, sub, role: 'admin', status: 'active' }`
+- Utente normale esistente: `{ email, sub, role: existingDoc.role, status: existingDoc.status }`
+
+Questo garantisce che l'update del plugin non azzeri mai i campi required.
+
+**Nota secondaria:** al primo login veniva anche loggato un errore Gmail API (403 - API non abilitata
+nel progetto GCP). L'hook `sendInviteEmailHook` gestisce già l'errore con try/catch senza bloccare
+il flusso. La Gmail API va abilitata in GCP Console per il progetto `servizi-interni`.
+
+**File aggiornati:**
+- `src/lib/auth/googleOAuth.ts` — `getUserInfo()` restituisce role e status in tutti i rami
+
+---
+
+## [2026-03-03] — Field-level access su role/status blocca la promozione invited→active
+
+**Problema:**
+Dopo il login Google il browser tornava su `/admin/login` invece di `/admin`.
+Il flusso OAuth completava correttamente (nessun errore nel catch), il cookie veniva
+settato, ma PayloadCMS rifiutava l'accesso all'admin.
+
+**Causa:**
+`overrideAccess: true` in PayloadCMS bypassa il **collection-level access** ma NON
+il **field-level access**. I campi `role` e `status` avevano:
+```typescript
+access: {
+  update: ({ req: { user } }) => user?.role === 'admin',
+}
+```
+Durante il flusso OAuth il `req.user` è `null` (utente non ancora autenticato),
+quindi la condizione restituisce `false` e il campo viene silenziosamente ignorato
+nell'update. L'`afterLoginHook` chiamava `payload.update({ data: { status: 'active' } })`
+ma l'update veniva scartato — l'utente rimaneva `invited`. Il JWT veniva emesso con
+`status: 'invited'`, PayloadCMS bloccava l'accesso e rimandava a `/admin/login`.
+
+**Soluzione:**
+Rimosso il field-level access da `role` e `status` in `Users.ts`. La protezione
+rimane al collection-level tramite `canWrite('users')` che permette solo agli admin
+di modificare utenti dall'UI. L'`afterLoginHook` con `overrideAccess: true` ora
+riesce a scrivere `status: 'active'` correttamente.
+
+**File aggiornati:**
+- `src/collections/Users.ts` — rimosso `access.update` da campi `role` e `status`
+
+---
+
+## [2026-03-03] — Pulsante Google OAuth2 mancante nella pagina /admin/login
+
+**Problema:**
+La pagina `/admin/login` mostrava solo il logo PayloadCMS senza nessun pulsante di
+accesso Google. Il plugin `payload-oauth2` è configurato e funzionante, ma non inietta
+automaticamente un pulsante nella UI di login di PayloadCMS.
+
+**Causa:**
+`payload-oauth2` (WilsonLe) gestisce solo il lato server del flusso OAuth2 (endpoint
+`/api/oauth/google` e callback). Non registra automaticamente alcun componente React
+nella pagina di login di PayloadCMS.
+
+**Soluzione:**
+Creato il componente Client Component `src/components/GoogleLoginButton.tsx` che:
+- Reindirizza verso `/api/oauth/google` (l'`authorizePath` configurato nel plugin)
+- Usa inline styles per non dipendere da CSS esterni
+- Include il logo Google SVG ufficiale
+- Aggiunge un separatore "oppure" tra il pulsante Google e il form email/password
+
+Registrato in `payload.config.ts` sotto `admin.components.beforeLogin`:
+```typescript
+admin: {
+  components: {
+    beforeLogin: ['@/components/GoogleLoginButton'],
+  },
+}
+```
+
+L'import map è stato aggiornato automaticamente da `generate:importmap`.
+
+**File creati:**
+- `src/components/GoogleLoginButton.tsx` — componente pulsante Google
+
+**File aggiornati:**
+- `src/payload.config.ts` — aggiunto `admin.components.beforeLogin`
+
+---
+
 ## [2026-03-03] — Rinomina `PAYLOAD_PUBLIC_SERVER_URL` → `SERVER_URL`
 
 **Problema:**

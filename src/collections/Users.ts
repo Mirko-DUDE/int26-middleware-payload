@@ -32,9 +32,10 @@ export const Users: CollectionConfig = {
         { label: 'Amministrazione', value: 'amministrazione' },
         // 'sistema' NON appare qui — è un service account tecnico
       ],
-      access: {
-        update: ({ req: { user } }) => (user as { role?: string } | null)?.role === 'admin',
-      },
+      // Nessun field-level access: la protezione è al collection-level (canWrite).
+      // Il field-level access con req.user === null blocca silenziosamente
+      // l'update di role/status anche con overrideAccess: true (che agisce solo
+      // sul collection-level), impedendo la promozione invited→active nell'afterLoginHook.
       admin: {
         description: 'Ruolo operativo. Determina le aree visibili e le azioni permesse.',
       },
@@ -50,9 +51,7 @@ export const Users: CollectionConfig = {
         { label: 'Attivo', value: 'active' },
         { label: 'Sospeso', value: 'suspended' },
       ],
-      access: {
-        update: ({ req: { user } }) => (user as { role?: string } | null)?.role === 'admin',
-      },
+      // Nessun field-level access: stessa motivazione di 'role' sopra.
       admin: {
         description: 'Stato account. Gli utenti sospesi non possono accedere.',
       },
