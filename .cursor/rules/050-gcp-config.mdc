@@ -1,0 +1,188 @@
+---
+description: Regole infrastruttura GCP — Cloud Run, Cloud SQL, Cloud Tasks, Secret Manager
+globs: ["src/**/*.ts", "src/lib/gcp/**/*.ts", "*.yaml", "Dockerfile", ".env*"]
+alwaysApply: true
+---
+
+# Regole GCP Infrastructure — Task A5
+
+## REGOLA 1: Secret Manager — mai env vars nel codice
+
+I token API NON vanno mai nel codice, nel Dockerfile, o in file `.env` versionati.
+
+```typescript
+// ✅ CORRETTO: il secret è montato da Secret Manager come env var al deploy
+const furiousToken = process.env.FURIOUS_AUTH_TOKEN
+if (!furiousToken) throw new Error('FURIOUS_AUTH_TOKEN non configurato')
+
+// ❌ SBAGLIATO: mai hardcodato
+const furiousToken = 'ft_abc123...'
+
+// ❌ SBAGLIATO: mai chiamare Secret Manager a runtime nel codice applicativo
+import { SecretManagerServiceClient } from '@google-cloud/secret-manager'
+const [version] = await client.accessSecretVersion({ name: '...' })
+```
+
+**Secret esistenti (nomi esatti):**
+```
+furious-auth-token
+furious-auth-token-expires
+starty-jwt-token
+starty-jwt-expires
+starty-webhook-secret
+```
+
+Staging usa i nomi con suffisso `-staging`: `furious-auth-token-staging`, ecc.
+
+## REGOLA 2: Pattern Adapter per Cloud Tasks — isolare in src/lib/gcp/tasks.ts
+
+Tutte le chiamate a Cloud Tasks devono passare ESCLUSIVAMENTE da `src/lib/gcp/tasks.ts`.
+Non chiamare `@google-cloud/tasks` direttamente da altri file.
+
+```typescript
+// ✅ CORRETTO: usa sempre il wrapper
+import { enqueueAbsenceTask, enqueueInvoiceTask } from '@/lib/gcp/tasks'
+await enqueueAbsenceTask({ absenceId, webhookLogId, attempt: 1 })
+
+// ❌ SBAGLIATO: chiamata diretta da fuori lib/gcp/
+import { CloudTasksClient } from '@google-cloud/tasks'
+const client = new CloudTasksClient()
+await client.createTask(...)
+```
+
+**Interfaccia minima di `src/lib/gcp/tasks.ts`:**
+```typescript
+export async function enqueueAbsenceTask(payload: AbsenceTaskPayload): Promise<string>
+export async function enqueueInvoiceTask(payload: InvoiceTaskPayload): Promise<string>
+// Restituisce il Cloud Tasks task name (usato come taskId nel webhook-log)
+```
+
+## REGOLA 3: Nomi code Cloud Tasks — usa le env vars
+
+Non hardcodare mai i nomi delle code. Usare le env vars:
+
+```typescript
+// ✅ CORRETTO
+const queueName = process.env.CLOUD_TASKS_QUEUE_ABSENCES
+// staging: 'queue-absences-staging'
+// produzione: 'queue-absences-prod'
+
+// ❌ SBAGLIATO
+const queueName = 'queue-absences-prod'
+```
+
+## REGOLA 4: Retry Cloud Tasks — configurazione allineata con A2
+
+Quando crei un task, non sovrascrivere la retry config della coda.
+La coda è già configurata con:
+- Max tentativi: 5
+- Backoff: 10s → 20s → 40s → 80s → 160s → cap 1h
+- Non aggiungere `scheduleTime` per retry immediati — lascia gestire a Cloud Tasks
+
+```typescript
+// ✅ CORRETTO: nessuna scheduleTime (esecuzione immediata)
+const task = {
+  httpRequest: {
+    url: `${process.env.WORKER_BASE_URL}/api/workers/absence`,
+    httpMethod: 'POST' as const,
+    headers: { 'Content-Type': 'application/json' },
+    body: Buffer.from(JSON.stringify(payload)).toString('base64'),
+    oidcToken: {
+      serviceAccountEmail: `middleware-sa@${process.env.GCP_PROJECT_ID}.iam.gserviceaccount.com`,
+      audience: process.env.WORKER_BASE_URL,
+    },
+  },
+}
+```
+
+## REGOLA 5: Endpoint worker — sempre autenticati con OIDC
+
+Gli endpoint worker (`/api/workers/*`) devono verificare il token OIDC di Cloud Tasks.
+Nessun endpoint worker può essere pubblicamente accessibile senza autenticazione.
+
+```typescript
+// Middleware di verifica OIDC per endpoint worker
+import { OAuth2Client } from 'google-auth-library'
+
+export async function verifyCloudTasksToken(req: Request, res: Response, next: NextFunction) {
+  const authHeader = req.headers.authorization
+  if (!authHeader?.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Missing OIDC token' })
+  }
+  // verifica e prosegui
+}
+```
+
+## REGOLA 6: Database — usa sempre Cloud SQL Auth Proxy
+
+La connessione a Cloud SQL avviene SEMPRE tramite Unix socket (Auth Proxy), mai TCP diretto.
+
+```typescript
+// ✅ CORRETTO: DATABASE_URL usa socket Unix
+// postgresql://user:pass@localhost/dbname?host=/cloudsql/PROJECT:REGION:INSTANCE
+
+// ❌ SBAGLIATO: connessione TCP diretta con IP
+// postgresql://user:pass@10.0.0.5:5432/dbname
+```
+
+Il `DATABASE_URL` corretto è già nella env var — non costruire la connection string nel codice.
+
+## REGOLA 7: Pool connessioni DB — rispettare i limiti
+
+```typescript
+// drizzle config — NON aumentare max oltre 5 per istanza Cloud Run
+pool: {
+  max: 5,   // 5 conn/istanza × 20 istanze max = 100 conn totali (limite db-g1-small)
+  min: 1,
+  idleTimeoutMillis: 30000,
+}
+```
+
+## REGOLA 8: Ambienti — prefissi obbligatori
+
+Le risorse GCP seguono la convenzione di naming:
+
+```
+Cloud Run:    middleware-{env}         (staging | prod)
+Cloud SQL:    middleware-db-{env}
+Cloud Tasks:  queue-{tipo}-{env}       (tipo: absences | invoices)
+Secret:       {nome-secret}-staging    (solo staging, produzione senza suffisso)
+```
+
+## REGOLA 9: Dockerfile — nessun secret, nessuna env var sensibile
+
+```dockerfile
+# ✅ CORRETTO: Dockerfile non contiene secret
+FROM node:20-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
+COPY . .
+RUN npm run build
+EXPOSE 3000
+CMD ["node", "dist/server.js"]
+
+# ❌ SBAGLIATO: mai ENV con token nel Dockerfile
+ENV FURIOUS_AUTH_TOKEN=ft_abc123
+```
+
+## REGOLA 10: Cloud Run — limiti di configurazione
+
+```yaml
+# Valori corretti per Cloud Run (non modificare senza aggiornare la doc)
+# Staging
+memory: 512Mi
+cpu: "1"
+min-instances: 0
+max-instances: 5
+timeout: 60s
+concurrency: 80
+
+# Produzione
+memory: 2Gi   # aumentato rispetto a staging
+cpu: "1"
+min-instances: 0
+max-instances: 20
+timeout: 60s
+concurrency: 80
+```

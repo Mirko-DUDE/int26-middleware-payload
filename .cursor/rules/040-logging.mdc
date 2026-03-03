@@ -1,0 +1,195 @@
+---
+description: Regole di logging, Pino, Sentry e audit log per agenti AI
+globs: ["src/**/*.ts", "src/**/*.tsx"]
+alwaysApply: true
+---
+
+# Regole Logging — Task A4
+
+## REGOLA 1: Due livelli, responsabilità separate
+
+Il sistema ha ESATTAMENTE due livelli di log. Non aggiungere mai un terzo.
+
+- **Livello 1 (Business):** Collection `webhook-logs` su PostgreSQL via PayloadCMS. Visibile agli operatori.
+- **Livello 2 (System):** `stdout` JSON via Pino → catturato da Google Cloud Logging. Solo per sviluppatori.
+
+```typescript
+// ✅ CORRETTO: log di sistema con Pino
+logger.info({ taskId, collection, furiousId, attempt }, 'Worker avviato')
+
+// ✅ CORRETTO: aggiornamento status nel business log
+await payload.update({
+  collection: 'webhook-logs',
+  id: logId,
+  data: { status: 'processing', attempts: attempt },
+})
+
+// ❌ SBAGLIATO: scrivere log di sistema su Postgres
+await payload.create({ collection: 'webhook-logs', data: { rawSystemLog: '...' } })
+```
+
+## REGOLA 2: Campi obbligatori in OGNI log entry Pino
+
+Ogni chiamata a `logger.info/warn/error` DEVE includere questi campi nel contesto:
+
+```typescript
+interface LogContext {
+  taskId: string      // OBBLIGATORIO sempre
+  collection: 'absence-requests' | 'invoice-syncs'  // OBBLIGATORIO sempre
+  furiousId?: string  // OBBLIGATORIO se disponibile
+  startyId?: string   // OBBLIGATORIO se disponibile
+  attempt: number     // OBBLIGATORIO sempre (1-based)
+}
+
+// ✅ PATTERN CORRETTO
+logger.info(
+  { taskId, collection: 'absence-requests', furiousId: absence.id, attempt: 1 },
+  'Descrizione azione'
+)
+
+// ❌ SBAGLIATO - mancano i campi obbligatori
+logger.info('Descrizione azione')
+logger.info({ error }, 'Errore generico')
+```
+
+## REGOLA 3: Schema obbligatorio business audit log
+
+Quando crei o aggiorni un record `webhook-logs`, i seguenti campi sono sempre presenti:
+
+```typescript
+interface WebhookLogData {
+  collection: 'absence-requests' | 'invoice-syncs'  // quale flusso
+  furiousId?: string     // ID entità su Furious
+  startyId?: string      // ID entità su Starty
+  status: 'received' | 'queued' | 'processing' | 'completed' | 'failed' | 'dead-letter'
+  rawPayload: object     // payload grezzo — SOLO su Postgres, mai loggare altrove
+  attempts: number       // default 0, incrementa ad ogni retry
+  lastError?: string     // null se nessun errore
+  processedAt?: Date     // valorizzato solo quando status = 'completed'
+  taskId?: string        // ID Cloud Tasks per correlazione
+}
+```
+
+## REGOLA 4: Aggiornamento status nel ciclo di vita
+
+Seguire sempre questa sequenza di aggiornamenti status:
+
+```typescript
+// 1. Webhook ricevuto dall'endpoint
+await updateWebhookLog(logId, { status: 'received', rawPayload: req.body })
+
+// 2. Task accodato su Cloud Tasks
+await updateWebhookLog(logId, { status: 'queued', taskId: cloudTaskId })
+
+// 3. Worker inizia elaborazione
+await updateWebhookLog(logId, { status: 'processing', attempts: attempt })
+
+// 4a. Worker completa con successo
+await updateWebhookLog(logId, { status: 'completed', processedAt: new Date() })
+
+// 4b. Worker fallisce (ma verrà ritentato)
+await updateWebhookLog(logId, {
+  status: 'failed',
+  lastError: error.message,
+  attempts: attempt,
+})
+
+// 4c. Tentativi esauriti
+await updateWebhookLog(logId, { status: 'dead-letter', lastError: error.message })
+```
+
+## REGOLA 5: Sentry — contesto obbligatorio nei worker
+
+In ogni worker asincrono, imposta sempre il contesto Sentry PRIMA della logica:
+
+```typescript
+import * as Sentry from '@sentry/node'
+
+export async function workerFunction(payload: TaskPayload) {
+  // SEMPRE prima della logica
+  Sentry.setContext('task', {
+    taskId: payload.taskId,
+    collection: payload.collection,
+    furiousId: payload.furiousId,
+    attempt: payload.attempt,
+  })
+
+  try {
+    // ... logica
+  } catch (error) {
+    Sentry.captureException(error, {
+      tags: { collection: payload.collection, furiousId: payload.furiousId },
+    })
+    throw error // SEMPRE rilanciare per il retry di Cloud Tasks
+  }
+}
+```
+
+## REGOLA 6: Lista NERA — mai loggare su Cloud Logging
+
+Questi dati vanno su PostgreSQL (Livello 1) o non vanno loggati affatto:
+
+```typescript
+// ❌ MAI su Cloud Logging (stdout/Pino)
+const NEVER_LOG_TO_CLOUD = [
+  'rawPayload',    // payload completo del webhook
+  'token',         // qualsiasi token API
+  'password',      // qualsiasi password
+  'jwt',           // qualsiasi JWT
+  'secret',        // qualsiasi secret
+  'email',         // indirizzi email
+  'firstName',     // dati anagrafici
+  'lastName',
+  'fiscalCode',
+]
+
+// ✅ Usa sanitizeForLog() prima di qualsiasi log
+import { sanitizeForLog } from '@/lib/logger'
+logger.info({ ...sanitizeForLog(data), taskId, collection, attempt }, 'msg')
+```
+
+## REGOLA 7: Livelli Pino — quando usare cosa
+
+```typescript
+// INFO: flusso normale
+logger.info(ctx, 'Webhook ricevuto')
+logger.info(ctx, 'Task accodato su Cloud Tasks')
+logger.info(ctx, 'Worker completato con successo')
+
+// WARN: anomalia non bloccante
+logger.warn(ctx, 'Retry in corso: API Furious lenta')
+logger.warn(ctx, 'Campo opzionale mancante nel payload')
+
+// ERROR: fallimento che blocca l'elaborazione
+logger.error({ ...ctx, error: err.message }, 'Worker fallito: API non raggiungibile')
+// NON usare logger.error per warning
+// NON usare logger.info per errori
+```
+
+## REGOLA 8: Inizializzazione logger
+
+Usa sempre il singleton da `@/lib/logger`, mai `console.log`:
+
+```typescript
+// ✅ CORRETTO
+import { logger } from '@/lib/logger'
+
+// ❌ SBAGLIATO
+console.log('...')
+console.error('...')
+```
+
+Il file `src/lib/logger.ts` è il punto centrale — non creare logger alternativi.
+
+## REGOLA 9: Metriche — messaggi standardizzati
+
+Usa questi messaggi ESATTI per consentire le log-based metrics su Cloud Monitoring:
+
+```typescript
+// Messaggi standardizzati — NON modificare il testo
+'Webhook ricevuto'              // → metrica webhook_received_total
+'Task accodato su Cloud Tasks'  // → metrica task_queued_total
+'Worker completato con successo' // → metrica task_completed_total
+'Worker fallito'                // → metrica task_failed_total (level=error)
+'Task in dead-letter'           // → metrica task_dead_letter_total
+```
