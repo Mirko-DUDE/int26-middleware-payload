@@ -1,5 +1,5 @@
 ---
-description: Regole di logging, Pino, Sentry e audit log per agenti AI
+description: Regole di logging, monitoring, Pino e audit log per agenti AI
 globs: ["src/**/*.ts", "src/**/*.tsx"]
 alwaysApply: true
 ---
@@ -98,31 +98,100 @@ await updateWebhookLog(logId, {
 await updateWebhookLog(logId, { status: 'dead-letter', lastError: error.message })
 ```
 
-## REGOLA 5: Sentry — contesto obbligatorio nei worker
+## REGOLA 5: Pattern Adapter Monitoring — mai importare Sentry direttamente
 
-In ogni worker asincrono, imposta sempre il contesto Sentry PRIMA della logica:
+Il sistema di error tracking segue lo stesso **Pattern Adapter** usato per gli altri servizi del progetto (`src/lib/gcp/tasks.ts`, `src/lib/gcp/secrets.ts`, `src/lib/furious/auth.ts`).
+
+**Unico punto di accesso:** `src/lib/monitoring/index.ts`  
+**Regola assoluta:** worker e Collection non importano MAI `@sentry/node` direttamente.  
+**Principio:** Sentry è un dettaglio implementativo interno al wrapper — se si cambia provider si riscrive solo `src/lib/monitoring/index.ts`, nessun altro file.
+
+### Interfaccia pubblica del wrapper (nessun riferimento a Sentry nella firma)
 
 ```typescript
+// src/lib/monitoring/index.ts
+
+interface MonitoringContext {
+  taskId: string                                        // OBBLIGATORIO
+  collection: 'absence-requests' | 'invoice-syncs'     // OBBLIGATORIO
+  attempt: number                                       // OBBLIGATORIO
+  furiousId?: string                                    // opzionale
+  startyId?: string                                     // opzionale
+}
+
+// Funzioni pubbliche — generiche, nessun riferimento a Sentry
+export function captureError(error: unknown, context: MonitoringContext): void
+export function captureMessage(message: string, context: MonitoringContext): void
+```
+
+### Implementazione interna (Sentry è nascosto qui)
+
+```typescript
+// src/lib/monitoring/index.ts — implementazione completa
 import * as Sentry from '@sentry/node'
 
+export function captureError(error: unknown, context: MonitoringContext): void {
+  Sentry.withScope((scope) => {
+    scope.setContext('task', context)
+    scope.setTags({
+      collection: context.collection,
+      ...(context.furiousId && { furiousId: context.furiousId }),
+      ...(context.startyId && { startyId: context.startyId }),
+    })
+    Sentry.captureException(error)
+  })
+}
+
+export function captureMessage(message: string, context: MonitoringContext): void {
+  Sentry.withScope((scope) => {
+    scope.setContext('task', context)
+    Sentry.captureMessage(message)
+  })
+}
+```
+
+### Come usare il wrapper nei worker
+
+```typescript
+// ✅ CORRETTO: importa solo dal wrapper generico
+import { captureError } from '@/lib/monitoring'
+
 export async function workerFunction(payload: TaskPayload) {
-  // SEMPRE prima della logica
-  Sentry.setContext('task', {
+  const ctx = {
     taskId: payload.taskId,
     collection: payload.collection,
-    furiousId: payload.furiousId,
     attempt: payload.attempt,
-  })
+    furiousId: payload.furiousId,   // se disponibile
+  }
 
   try {
-    // ... logica
+    // ... logica del worker
   } catch (error) {
-    Sentry.captureException(error, {
-      tags: { collection: payload.collection, furiousId: payload.furiousId },
-    })
+    captureError(error, ctx)
     throw error // SEMPRE rilanciare per il retry di Cloud Tasks
   }
 }
+
+// ❌ SBAGLIATO: import diretto di Sentry fuori da src/lib/monitoring/
+import * as Sentry from '@sentry/node'
+Sentry.captureException(error)
+
+// ❌ SBAGLIATO: anche un import parziale è vietato fuori dal wrapper
+import { captureException } from '@sentry/node'
+```
+
+### Dove si inizializza Sentry
+
+L'inizializzazione (`Sentry.init(...)`) avviene una sola volta in `src/lib/monitoring/index.ts`, non nell'entry point dell'app:
+
+```typescript
+// src/lib/monitoring/index.ts — in cima al file, prima delle funzioni esportate
+Sentry.init({
+  dsn: process.env.SENTRY_DSN,
+  environment: process.env.NODE_ENV,
+  tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
+  enabled: process.env.NODE_ENV !== 'development',
+})
 ```
 
 ## REGOLA 6: Lista NERA — mai loggare su Cloud Logging

@@ -161,85 +161,101 @@ logger.info({ token: apiToken, email: user.email }, 'Auth')
 
 ---
 
-## 4. Integrazione Sentry
+## 4. Pattern Adapter Monitoring — wrapper su Sentry
 
-### 4.1 Dove installare l'SDK
+Il sistema di error tracking segue lo stesso **Pattern Adapter** adottato per gli altri servizi GCP del progetto (`src/lib/gcp/tasks.ts`, `src/lib/gcp/secrets.ts`, `src/lib/furious/auth.ts`). Sentry è un dettaglio implementativo: se si cambia provider, si riscrive solo il wrapper senza toccare nessun worker né Collection.
 
-Sentry va installato nell'entry point principale dell'applicazione PayloadCMS, **prima** di qualsiasi altro middleware.
+### 4.1 Struttura del wrapper
+
+Il file `src/lib/monitoring/index.ts` è l'**unico punto del progetto** in cui `@sentry/node` viene importato. Worker e Collection non lo importano mai direttamente.
 
 ```bash
 npm install @sentry/node
 ```
 
-**`src/sentry.ts`** (da importare come primo import in `src/server.ts`):
+**`src/lib/monitoring/index.ts`** — contiene inizializzazione, implementazione e interfaccia pubblica:
 
 ```typescript
 import * as Sentry from '@sentry/node'
 
+// Inizializzazione — avviene qui, non nell'entry point dell'app
 Sentry.init({
   dsn: process.env.SENTRY_DSN,
   environment: process.env.NODE_ENV, // 'staging' | 'production'
-  // Cattura il 100% degli errori, campiona il 10% delle transazioni (performance)
   tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
-  // Non inviare a Sentry in sviluppo locale
   enabled: process.env.NODE_ENV !== 'development',
 })
+
+// Contesto obbligatorio per ogni evento di monitoring
+export interface MonitoringContext {
+  taskId: string                                     // OBBLIGATORIO
+  collection: 'absence-requests' | 'invoice-syncs'  // OBBLIGATORIO
+  attempt: number                                    // OBBLIGATORIO
+  furiousId?: string                                 // opzionale
+  startyId?: string                                  // opzionale
+}
+
+// Interfaccia pubblica generica — nessun riferimento a Sentry nella firma
+export function captureError(error: unknown, context: MonitoringContext): void {
+  Sentry.withScope((scope) => {
+    scope.setContext('task', context)
+    scope.setTags({
+      collection: context.collection,
+      ...(context.furiousId && { furiousId: context.furiousId }),
+      ...(context.startyId && { startyId: context.startyId }),
+    })
+    Sentry.captureException(error)
+  })
+}
+
+export function captureMessage(message: string, context: MonitoringContext): void {
+  Sentry.withScope((scope) => {
+    scope.setContext('task', context)
+    Sentry.captureMessage(message)
+  })
+}
 ```
 
 ### 4.2 Cosa cattura automaticamente
 
-Con `@sentry/node` inizializzato, Sentry cattura automaticamente:
-- Eccezioni non gestite (uncaught exceptions)
-- Promise rejection non gestite
-- Errori HTTP Express/Next.js con stack trace completo
-- Breadcrumb delle richieste HTTP effettuate (esclusi header sensibili)
+Con `Sentry.init()` eseguito all'import del modulo, Sentry cattura automaticamente: eccezioni non gestite (uncaught exceptions), promise rejection non gestite, errori HTTP Express/Next.js con stack trace completo, breadcrumb delle richieste HTTP effettuate (esclusi header sensibili).
 
-### 4.3 Aggiungere contesto nei worker
+### 4.3 Come usare il wrapper nei worker
 
-Nei worker asincroni, aggiungere sempre il contesto di Sentry per correlare l'errore al task:
+Nei worker asincroni si importa esclusivamente da `@/lib/monitoring`, mai da `@sentry/node`:
 
 ```typescript
-import * as Sentry from '@sentry/node'
+// ✅ CORRETTO
+import { captureError } from '@/lib/monitoring'
 
 export async function processAbsenceWorker(taskPayload: AbsenceTaskPayload) {
-  // Imposta il contesto per tutti gli errori in questo scope
-  Sentry.setContext('task', {
+  const ctx = {
     taskId: taskPayload.taskId,
-    collection: 'absence-requests',
-    furiousId: taskPayload.absenceId,
+    collection: 'absence-requests' as const,
     attempt: taskPayload.attempt,
-  })
+    furiousId: taskPayload.absenceId,
+  }
 
   try {
     // ... logica del worker
   } catch (error) {
-    // Cattura manualmente con contesto aggiuntivo
-    Sentry.captureException(error, {
-      tags: {
-        collection: 'absence-requests',
-        furiousId: taskPayload.absenceId,
-      },
-    })
+    captureError(error, ctx)
     throw error // rilancia sempre per il retry di Cloud Tasks
   }
 }
+
+// ❌ SBAGLIATO: import diretto di Sentry fuori da src/lib/monitoring/
+import * as Sentry from '@sentry/node'
+Sentry.captureException(error)
 ```
 
 ### 4.4 Configurazione ambienti
 
-**Staging:**
-- `SENTRY_DSN` valorizzato con il DSN del progetto
-- `NODE_ENV=staging`
-- Tutti gli errori inviati, nessun filtro
-- Alert via email agli sviluppatori
+**Staging:** `NODE_ENV=staging` — tutti gli errori inviati, alert via email agli sviluppatori.
 
-**Produzione:**
-- Stesso `SENTRY_DSN` (Sentry usa `environment` per separare)
-- `NODE_ENV=production`
-- Alert con soglie: >5 errori unici in 1h → Slack + email
-- `tracesSampleRate: 0.1` per contenere i costi di performance monitoring
+**Produzione:** `NODE_ENV=production` — stessa `SENTRY_DSN` (Sentry usa `environment` per separare), alert con soglie >5 errori unici in 1h → Slack + email, `tracesSampleRate: 0.1` per contenere i costi.
 
-**Non configurare mai Sentry in sviluppo locale** (`NODE_ENV=development`): il flag `enabled: false` previene l'invio.
+**Sviluppo locale:** `NODE_ENV=development` — il flag `enabled: false` previene qualsiasi invio a Sentry.
 
 ---
 
@@ -301,5 +317,5 @@ function sanitizeForLog(obj: Record<string, unknown>): Record<string, unknown> {
 | Storia di ogni operazione | PostgreSQL (`webhook-logs`) | Operatori via PayloadCMS UI |
 | Payload grezzo del webhook | PostgreSQL (`rawPayload`) | Solo sviluppatori (accesso DB diretto) |
 | Log tecnici dei worker | Google Cloud Logging | Sviluppatori via GCP Console |
-| Crash e eccezioni | Sentry | Sviluppatori via Sentry.io |
+| Crash e eccezioni | `src/lib/monitoring` → Sentry (dettaglio impl.) | Sviluppatori via Sentry.io |
 | Metriche aggregate | Google Cloud Monitoring | Sviluppatori + alert automatici |
