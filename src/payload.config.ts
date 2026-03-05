@@ -12,6 +12,8 @@ import { AbsenceLog } from './collections/AbsenceLog'
 import { InvoicePendingReview } from './collections/InvoicePendingReview'
 import { InvoiceLog } from './collections/InvoiceLog'
 import { googleOAuthPlugin } from './lib/auth/googleOAuth'
+import { absenceWebhookHandler } from '@/endpoints/absenceWebhook'
+import { absenceWorkerHandler } from '@/endpoints/absenceWorkerEndpoint'
 
 const filename = fileURLToPath(import.meta.url)
 const dirname = path.dirname(filename)
@@ -39,4 +41,8 @@ export default buildConfig({
   }),
   sharp,
   plugins: [googleOAuthPlugin],
+  endpoints: [
+    { path: '/webhooks/furious/absence', method: 'post', handler: absenceWebhookHandler },
+    { path: '/workers/absence',          method: 'post', handler: absenceWorkerHandler  },
+  ],
 })

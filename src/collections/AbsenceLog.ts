@@ -72,6 +72,7 @@ export const AbsenceLog: CollectionConfig = {
       index: true,
       options: [
         { label: 'Ricevuto', value: 'received' },
+        { label: 'In coda', value: 'queued' },
         { label: 'In elaborazione', value: 'processing' },
         { label: 'Approvato', value: 'approved' },
         { label: 'Saltato', value: 'skipped' },

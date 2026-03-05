@@ -1,5 +1,14 @@
 import { google } from 'googleapis'
 
+export interface FailedTaskEmailParams {
+  collection: string
+  recordId: string
+  furiousAbsenceId: number
+  pseudo: string
+  attempts: number
+  lastError: string
+}
+
 /**
  * Invia una mail tramite Gmail API usando domain-wide delegation.
  * Il Service Account impersona GMAIL_DELEGATED_USER per inviare
@@ -53,5 +62,28 @@ export async function sendMail({
   await gmail.users.messages.send({
     userId: 'me',
     requestBody: { raw: encodedMessage },
+  })
+}
+
+export async function sendFailedTaskEmail(params: FailedTaskEmailParams): Promise<void> {
+  const { collection, recordId, furiousAbsenceId, pseudo, attempts, lastError } = params
+  const adminEmail = process.env.BOOTSTRAP_ADMIN_EMAIL
+  if (!adminEmail) throw new Error('BOOTSTRAP_ADMIN_EMAIL non configurato')
+
+  const adminUrl = process.env.SERVER_URL ?? ''
+  const recordUrl = `${adminUrl}/admin/collections/${collection}/${recordId}`
+
+  await sendMail({
+    to: adminEmail,
+    subject: `[Middleware] Task fallito definitivamente — ${collection} #${recordId}`,
+    html: `
+      <h2>Task fallito definitivamente</h2>
+      <p><strong>Collection:</strong> ${collection}</p>
+      <p><strong>Record:</strong> <a href="${recordUrl}">${recordId}</a></p>
+      <p><strong>Furious Absence ID:</strong> ${furiousAbsenceId}</p>
+      <p><strong>Pseudo:</strong> ${pseudo}</p>
+      <p><strong>Tentativi effettuati:</strong> ${attempts}</p>
+      <p><strong>Ultimo errore:</strong> ${lastError}</p>
+    `,
   })
 }

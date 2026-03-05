@@ -1,5 +1,5 @@
 # PROJECT_CONTEXT.md
-*Documento di riferimento per agenti AI e sviluppatori — aggiornato al completamento di A1–A5 e setup autenticazione Google OAuth2*
+*Documento di riferimento per agenti AI e sviluppatori — aggiornato al completamento di A1–A5, autenticazione Google OAuth2, e Sottofase B (B1–B4)*
 
 ---
 
@@ -113,10 +113,10 @@ docs/project/
 - [x] A5 — Infrastruttura GCP — specifiche provisioning
 
 ### Sottofase B — Release Assenze ← **TASK CORRENTE**
-- [ ] B1 — Endpoint ricezione webhook assenze (`POST /api/webhooks/furious/absence`)
-- [ ] B2 — Worker elaborazione assenza (crea `AbsenceRequest` in Payload)
-- [ ] B3 — UI approvazione in PayloadCMS (pulsanti Approva/Rifiuta)
-- [ ] B4 — Chiamata API Furious `PUT /api/v2/absence/` per aggiornamento stato
+- [x] B1 — Endpoint ricezione webhook assenze (`src/endpoints/absenceWebhook.ts`)
+- [x] B2 — Worker logica auto-approvazione (`src/workers/absence/processAbsence.ts`)
+- [x] B3 — Endpoint worker interno Cloud Tasks (`src/endpoints/absenceWorkerEndpoint.ts`)
+- [x] B4 — Notifica admin `failed_permanent` (`sendFailedTaskEmail` in `src/services/mailer.ts`)
 - [ ] B5 — Test E2E in staging + configurazione webhook in Furious (staging)
 - [ ] B6 — Deploy produzione + configurazione webhook Furious (produzione)
 
@@ -184,11 +184,14 @@ src/
 │   ├── gcp/secrets.ts              ✅ getSecret(), setSecret()
 │   ├── monitoring/index.ts         ✅ captureError(), captureMessage() wrapper Sentry
 │   └── logger.ts                   ✅ singleton Pino
+├── endpoints/
+│   ├── absenceWebhook.ts           ✅ B1 — ricezione webhook, crea AbsenceLog, accoda task
+│   └── absenceWorkerEndpoint.ts    ✅ B3 — endpoint interno Cloud Tasks, auth OIDC/dev, matrice retry
 ├── workers/
 │   ├── types.ts                    ✅ WorkerFn, WorkerResult, WorkerTaskPayload
-│   └── absence/processAbsence.ts  ✅ worker auto-approvazione assenze
+│   └── absence/processAbsence.ts  ✅ B2 — worker auto-approvazione assenze
 ├── services/
-│   └── mailer.ts                   ✅ Gmail API domain-wide delegation
+│   └── mailer.ts                   ✅ Gmail API domain-wide delegation + sendFailedTaskEmail()
 ├── components/
 │   └── GoogleLoginButton.tsx       ✅ Server Component pulsante login Google
 └── hooks/

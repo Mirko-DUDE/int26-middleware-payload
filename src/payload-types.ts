@@ -202,7 +202,7 @@ export interface AbsenceLog {
   /**
    * Stato del processing. Vedi state machine in 010-collections.md.
    */
-  status: 'received' | 'processing' | 'approved' | 'skipped' | 'failed_permanent';
+  status: 'received' | 'queued' | 'processing' | 'approved' | 'skipped' | 'failed_permanent';
   /**
    * Numero di tentativi di processing eseguiti dal worker.
    */

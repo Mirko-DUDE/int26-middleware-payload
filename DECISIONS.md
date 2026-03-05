@@ -405,6 +405,87 @@ L'import map è stato aggiornato automaticamente da `generate:importmap`.
 
 ---
 
+## [2026-03-05] — Sottofase B: stato `queued` mancante da `AbsenceLog`
+
+**Problema:**
+Implementando `absenceWebhook.ts` (B1), l'aggiornamento del record a `status: 'queued'`
+dopo l'accodamento su Cloud Tasks causava un errore TypeScript: il tipo generato
+`AbsenceLog` non includeva `'queued'` tra i valori validi del campo `status`.
+
+**Causa:**
+La collection `AbsenceLog.ts` aveva nelle options del campo `status` solo i valori
+`received | processing | approved | skipped | failed_permanent`. Lo stato `queued`
+era documentato nella state machine (`060-absence-flow.mdc`) ma non era mai stato
+aggiunto alle options della collection.
+
+**Soluzione:**
+Aggiunto `{ label: 'In coda', value: 'queued' }` alle options del campo `status` in
+`src/collections/AbsenceLog.ts`. Eseguito `generate:types` per aggiornare
+`src/payload-types.ts`.
+
+**File aggiornati:**
+- `src/collections/AbsenceLog.ts` — aggiunto stato `queued`
+- `src/payload-types.ts` — rigenerato
+
+---
+
+## [2026-03-05] — `req.json()` opzionale in `PayloadRequest` richiede cast esplicito
+
+**Problema:**
+In `absenceWebhook.ts` e `absenceWorkerEndpoint.ts`, la chiamata `await req.json()`
+causava l'errore TypeScript `TS2722: Cannot invoke an object which is possibly 'undefined'`.
+
+**Causa:**
+Il tipo `PayloadRequest` di PayloadCMS estende `Request` della Web API ma ridefinisce
+il metodo `json` come opzionale (`json?: () => Promise<unknown>`). Questo è un
+comportamento del tipo generato da Payload — a runtime il metodo è sempre presente
+perché `PayloadRequest` è costruito sopra `Request`.
+
+**Soluzione:**
+Cast esplicito `(req as Request).json()` nei due endpoint. Il cast è sicuro perché
+`PayloadRequest` è sempre una `Request` a runtime. Il cast è localizzato nelle due
+righe di parsing body — non si propaga al resto del codice.
+
+**File aggiornati:**
+- `src/endpoints/absenceWebhook.ts` — `(req as Request).json()`
+- `src/endpoints/absenceWorkerEndpoint.ts` — `(req as Request).json()`
+
+---
+
+## [2026-03-05] — `sendFailedTaskEmail` aggiunta a `mailer.ts` invece di file separato
+
+**Problema:**
+`absenceWorkerEndpoint.ts` (B3) deve inviare una notifica admin quando un task
+raggiunge `failed_permanent`. La funzione `sendFailedTaskEmail` non esisteva.
+
+**Opzioni valutate:**
+1. Creare `src/services/failedTaskMailer.ts` — file separato dedicato
+2. Aggiungere `sendFailedTaskEmail` a `src/services/mailer.ts` esistente
+
+**Decisione:**
+Aggiunta a `src/services/mailer.ts`. Il mailer è già il punto centralizzato per
+l'invio email via Gmail API — aggiungere una funzione specializzata è coerente
+con il principio di singola responsabilità del modulo (tutte le email escono da lì).
+Un file separato avrebbe duplicato l'inizializzazione del client Gmail.
+
+**Interfaccia aggiunta:**
+```typescript
+export interface FailedTaskEmailParams {
+  collection: string
+  recordId: string
+  furiousAbsenceId: number
+  pseudo: string
+  attempts: number
+  lastError: string
+}
+export async function sendFailedTaskEmail(params: FailedTaskEmailParams): Promise<void>
+```
+
+**File aggiornati:**
+- `src/services/mailer.ts` — aggiunta `FailedTaskEmailParams` e `sendFailedTaskEmail()`
+
+---
+
 ## [2026-03-03] — Rinomina `PAYLOAD_PUBLIC_SERVER_URL` → `SERVER_URL`
 
 **Problema:**
