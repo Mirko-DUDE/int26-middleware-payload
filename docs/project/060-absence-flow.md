@@ -71,7 +71,7 @@ L'endpoint (`src/endpoints/absenceWebhook.ts`) esegue nell'ordine:
 
 1. **Parsing body** — se il body non è JSON valido, risponde `400`.
 2. **Validazione** — verifica che `id` sia `number` e `pseudo` sia una stringa non vuota. Se manca uno dei due, risponde `400`. Gli altri campi del payload sono accettati senza validazione e salvati come `rawPayload`.
-3. **Creazione `AbsenceLog`** — crea il record con `status: 'received'`, `rawPayload: body`, `attempts: 0`. Se il DB è irraggiungibile, risponde `500` così Furious può ritentare. **Il record viene creato prima dell'accodamento** — se Cloud Tasks fallisce, il payload non è perso.
+3. **Creazione `AbsenceLog`** — crea il record con `status: 'received'`, `rawPayload: body`, `attempts: 0`. Il campo `absenceType` viene salvato se presente nel payload (`body.absenceType` o `body.type`); se assente rimane `null` — nessun fallback artificiale. Se il DB è irraggiungibile, risponde `500` così Furious può ritentare. **Il record viene creato prima dell'accodamento** — se Cloud Tasks fallisce, il payload non è perso.
 4. **Accodamento su Cloud Tasks** — chiama `enqueueAbsenceTask()` con `{ absenceLogId, furiousAbsenceId, pseudo, attempt: 1 }`. Se l'accodamento ha successo, aggiorna il record a `status: 'queued'` e salva il `taskName` restituito da Cloud Tasks.
 5. **Risposta `200 OK`** — restituita sempre, anche se l'accodamento fallisce. Se l'accodamento fallisce, il record rimane con `status: 'received'` come segnale per future riconciliazioni.
 

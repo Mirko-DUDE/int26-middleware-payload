@@ -192,9 +192,9 @@ export interface AbsenceLog {
    */
   endDate: string;
   /**
-   * Tipo assenza (campo `type` — stringa completa da Furious).
+   * Tipo di assenza ricevuto da Furious (es. ferie, smartworking, ROL)
    */
-  absenceType: string;
+  absenceType?: string | null;
   /**
    * Mezza giornata (campo `half_day`: 0=intera, 1=mattina, 2=pomeriggio).
    */

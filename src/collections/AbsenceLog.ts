@@ -49,8 +49,11 @@ export const AbsenceLog: CollectionConfig = {
     {
       name: 'absenceType',
       type: 'text',
-      required: true,
-      admin: { description: 'Tipo assenza (campo `type` — stringa completa da Furious).' },
+      label: 'Tipo assenza',
+      admin: {
+        readOnly: true,
+        description: 'Tipo di assenza ricevuto da Furious (es. ferie, smartworking, ROL)',
+      },
     },
     {
       name: 'halfDay',

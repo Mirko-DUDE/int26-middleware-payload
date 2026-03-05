@@ -10,6 +10,7 @@ interface FuriousAbsenceWebhookPayload {
   start_date?: string
   end_date?: string
   type?: string
+  absenceType?: string
   half_day?: number
   [key: string]: unknown
 }
@@ -57,7 +58,7 @@ export async function absenceWebhookHandler(req: PayloadRequest): Promise<Respon
         pseudo,
         startDate: typeof body.start_date === 'string' ? body.start_date : new Date().toISOString(),
         endDate: typeof body.end_date === 'string' ? body.end_date : new Date().toISOString(),
-        absenceType: typeof body.type === 'string' ? body.type : 'unknown',
+        absenceType: body.absenceType ?? (typeof body.type === 'string' ? body.type : null),
         halfDay:
           body.half_day === 0 || body.half_day === 1 || body.half_day === 2
             ? String(body.half_day) as '0' | '1' | '2'
