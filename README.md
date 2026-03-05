@@ -65,8 +65,11 @@ src/
 
 ```bash
 SERVER=http://localhost:3000
-SECRET=$WORKER_DEV_SECRET
+SECRET=$(grep WORKER_DEV_SECRET .env | cut -d '=' -f2)
 ```
+
+> **WORKER_DEV_SECRET deve essere impostato in `.env`.**
+> Se ricevi `403 Unauthorized`, verifica che il valore corrisponda esattamente.
 
 ---
 
@@ -76,9 +79,11 @@ SECRET=$WORKER_DEV_SECRET
 # 1. Invia il webhook
 curl -s -X POST "$SERVER/api/webhooks/furious/absence" \
   -H "Content-Type: application/json" \
-  -d '{"id": 12345, "pseudo": "mario.rossi"}'
+  -d '{"id": 12345, "pseudo": "mario.rossi", "absenceType": "home_office"}'
 
 # 2. Chiama il worker (simula Cloud Tasks)
+SECRET=$(grep WORKER_DEV_SECRET .env | cut -d '=' -f2)
+
 curl -s -X POST "$SERVER/api/workers/absence" \
   -H "Content-Type: application/json" \
   -H "x-worker-dev-secret: $SECRET" \
@@ -96,9 +101,11 @@ curl -s -X POST "$SERVER/api/workers/absence" \
 # 1. Invia il webhook
 curl -s -X POST "$SERVER/api/webhooks/furious/absence" \
   -H "Content-Type: application/json" \
-  -d '{"id": 99999, "pseudo": "pseudo.non.in.lista"}'
+  -d '{"id": 99999, "pseudo": "pseudo.non.in.lista", "absenceType": "home_office"}'
 
 # 2. Chiama il worker
+SECRET=$(grep WORKER_DEV_SECRET .env | cut -d '=' -f2)
+
 curl -s -X POST "$SERVER/api/workers/absence" \
   -H "Content-Type: application/json" \
   -H "x-worker-dev-secret: $SECRET" \
@@ -125,15 +132,17 @@ curl -s -X POST "$SERVER/api/webhooks/furious/absence" \
 
 ### Scenario 4 — Errore Furious simulato → `failed_permanent` dopo 5 tentativi
 
-Imposta credenziali Furious errate in `.env` (`FURIOUS_EMAIL` o `FURIOUS_PASSWORD` sbagliati), poi:
+Imposta credenziali Furious errate in `.env` (`FURIOUS_USERNAME` o `FURIOUS_PASSWORD` sbagliati), poi:
 
 ```bash
 # 1. Invia il webhook
 curl -s -X POST "$SERVER/api/webhooks/furious/absence" \
   -H "Content-Type: application/json" \
-  -d '{"id": 11111, "pseudo": "mario.rossi"}'
+  -d '{"id": 11111, "pseudo": "mario.rossi", "absenceType": "home_office"}'
 
 # 2. Chiama il worker 5 volte con attempt crescente
+SECRET=$(grep WORKER_DEV_SECRET .env | cut -d '=' -f2)
+
 for ATTEMPT in 1 2 3 4 5; do
   curl -s -X POST "$SERVER/api/workers/absence" \
     -H "Content-Type: application/json" \
