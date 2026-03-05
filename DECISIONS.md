@@ -405,6 +405,43 @@ L'import map è stato aggiornato automaticamente da `generate:importmap`.
 
 ---
 
+## [2026-03-05] — Pacchetti Node.js GCP/Sentry non bundlabili da webpack Next.js
+
+**Problema:**
+Dopo la registrazione dei nuovi endpoint in `payload.config.ts`, il dev server crashava
+con `Cannot find module .../cloud_tasks_client_config.json` su ogni richiesta a `/`.
+Il bundle RSC della frontend page (`app/(frontend)/page.tsx`) importava `payload.config.ts`
+→ `absenceWebhook.ts` → `@google-cloud/tasks`, che contiene file `.json` e `.cjs` con
+`require()` dinamici non risolvibili da webpack.
+
+**Causa:**
+`@google-cloud/tasks`, `@google-cloud/secret-manager`, `google-auth-library`, `@sentry/node`
+e `pino` sono librerie Node.js pure che usano `require()` dinamici, file `.cjs` e
+`__dirname` — pattern incompatibili con il bundler webpack di Next.js.
+Il problema era latente fin dall'implementazione di `tasks.ts` e `monitoring/index.ts`,
+ma è diventato visibile solo quando `payload.config.ts` ha iniziato a importare i nuovi
+endpoint che a loro volta importano queste librerie.
+
+**Soluzione:**
+Aggiunta la chiave `serverExternalPackages` in `next.config.mjs` con i cinque pacchetti
+problematici. Next.js li esclude dal bundle webpack e li lascia risolvere a runtime
+da Node.js tramite `require()` nativo — il comportamento corretto per librerie server-only.
+
+```js
+serverExternalPackages: [
+  '@google-cloud/tasks',
+  '@google-cloud/secret-manager',
+  'google-auth-library',
+  '@sentry/node',
+  'pino',
+],
+```
+
+**File aggiornati:**
+- `next.config.mjs` — aggiunta `serverExternalPackages`
+
+---
+
 ## [2026-03-05] — Sottofase B: stato `queued` mancante da `AbsenceLog`
 
 **Problema:**

@@ -2,7 +2,13 @@ import { withPayload } from '@payloadcms/next/withPayload'
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Your Next.js config here
+  serverExternalPackages: [
+    '@google-cloud/tasks',
+    '@google-cloud/secret-manager',
+    'google-auth-library',
+    '@sentry/node',
+    'pino',
+  ],
   webpack: (webpackConfig) => {
     webpackConfig.resolve.extensionAlias = {
       '.cjs': ['.cts', '.cjs'],
