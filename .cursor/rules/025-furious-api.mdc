@@ -1,0 +1,132 @@
+# Furious API — Pattern e Vincoli
+
+## REGOLA 1: Base URL sempre da env var
+
+```typescript
+// ✅ CORRETTO — fallback a produzione se non impostata
+const FURIOUS_BASE_URL = process.env.FURIOUS_BASE_URL ?? 'https://dude.furious-squad.com'
+
+// ❌ SBAGLIATO — hardcoded
+const FURIOUS_BASE_URL = 'https://dude.furious-squad.com'
+```
+
+**Ambienti:**
+- Produzione: `https://dude.furious-squad.com` (default se env var assente)
+- Sandbox / locale: `https://dudesandbox.furious-squad.com` (impostare in `.env`)
+
+## REGOLA 2: Tutte le chiamate passano da `furiousRequest<T>()`
+
+```typescript
+// ✅ CORRETTO
+export async function myFuriousCall(): Promise<MyType> {
+  return furiousRequest<MyType>('GET', '/api/v2/resource/')
+}
+
+// ❌ SBAGLIATO — fetch diretto senza wrapper
+const response = await fetch(`${FURIOUS_BASE_URL}/api/v2/resource/`, {
+  headers: { 'F-Auth-Token': token },
+})
+```
+
+`furiousRequest` gestisce: autenticazione, retry su 401, errori HTTP.
+
+## REGOLA 3: Pattern endpoint Furious v2
+
+### Approvazione assenza
+```typescript
+// ✅ CORRETTO — ID nel body, non nell'URL
+PUT /api/v2/absence/
+Body: {
+  "action": "update",   // OBBLIGATORIO
+  "data": {
+    "id": <furiousAbsenceId>,
+    "status": 1          // 1=Confermata, 2=Annullata
+  }
+}
+
+// ❌ SBAGLIATO — ID nell'URL
+PUT /api/v2/absence/123/
+PUT /api/v2/conge/123/   // path inesistente
+```
+
+### Lettura assenza
+```typescript
+// ✅ CORRETTO — ID come query string
+GET /api/v2/absence/?id=<furiousAbsenceId>
+
+// ❌ SBAGLIATO — ID nel path
+GET /api/v2/absence/123/
+```
+
+## REGOLA 4: Autenticazione — mai chiamare Secret Manager in locale
+
+`getFuriousToken()` usa Secret Manager SOLO in `NODE_ENV === 'production'`.
+In locale usa esclusivamente la cache in-memory.
+
+```typescript
+// Pattern corretto in auth.ts — già implementato
+if (process.env.NODE_ENV === 'production') {
+  // lettura/scrittura Secret Manager
+}
+// In locale: solo cache in-memory
+```
+
+## REGOLA 5: Gestione errori
+
+```typescript
+// FuriousApiError espone il codice HTTP
+try {
+  await approveAbsence(id)
+} catch (error) {
+  if (error instanceof FuriousApiError) {
+    // error.status = codice HTTP
+    // error.message = dettaglio
+  }
+}
+```
+
+## Interfacce pubbliche
+
+```typescript
+// src/lib/furious/api.ts
+export class FuriousApiError extends Error {
+  constructor(public readonly status: number, message: string)
+}
+
+export interface FuriousAbsence {
+  id: number
+  pseudo: string
+  start_date: string
+  end_date: string
+  type: string
+  half_day: 0 | 1 | 2
+  status: number
+}
+
+export interface FuriousApproveAbsenceResponse {
+  id: number
+  status: number
+}
+
+export async function approveAbsence(absenceId: number): Promise<FuriousApproveAbsenceResponse>
+export async function getAbsence(absenceId: number): Promise<FuriousAbsence>
+
+// src/lib/furious/auth.ts
+export async function getFuriousToken(): Promise<string>
+export function invalidateFuriousToken(): void
+```
+
+## Variabili d'ambiente
+
+| Variabile | Default | Note |
+|---|---|---|
+| `FURIOUS_BASE_URL` | `https://dude.furious-squad.com` | Override per sandbox locale |
+| `FURIOUS_USERNAME` | — | Obbligatoria |
+| `FURIOUS_PASSWORD` | — | Obbligatoria |
+
+## Estendere il client
+
+Per aggiungere un nuovo endpoint:
+1. Aggiungere interfaccia risposta in `api.ts`
+2. Aggiungere funzione esportata che chiama `furiousRequest<T>()`
+3. Non toccare `auth.ts`

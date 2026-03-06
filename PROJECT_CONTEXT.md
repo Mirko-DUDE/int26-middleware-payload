@@ -87,6 +87,7 @@ docs/project/
 ├── 000-architecture.md
 ├── 010-collections.md          (A1) Schema collezioni PayloadCMS
 ├── 020-workers.md              (A2/A3) Pattern worker, Cloud Tasks, retry
+├── 025-furious-api.md          ✅ Auth Furious, caching token, endpoint, ambienti
 ├── 030-auth-roles.md           (A3) ✅ Autenticazione, permessi, OAuth2, Gmail API
 ├── 040-logging.md              (A4) ✅ Business audit log, Pino, Sentry, metriche
 └── 050-gcp-infrastructure.md   (A5) ✅ Cloud Run, SQL, Tasks, Secret Manager, ambienti
@@ -96,6 +97,7 @@ docs/project/
 ├── 001-documentation-policy.mdc
 ├── 010-payloadcms-collections.mdc
 ├── 020-worker-patterns.mdc
+├── 025-furious-api.mdc         ✅
 ├── 030-auth-roles.mdc          (A3) ✅
 ├── 040-logging.mdc             (A4) ✅
 └── 050-gcp-config.mdc          (A5) ✅
@@ -117,7 +119,9 @@ docs/project/
 - [x] B2 — Worker logica auto-approvazione (`src/workers/absence/processAbsence.ts`)
 - [x] B3 — Endpoint worker interno Cloud Tasks (`src/endpoints/absenceWorkerEndpoint.ts`)
 - [x] B4 — Notifica admin `failed_permanent` (`sendFailedTaskEmail` in `src/services/mailer.ts`)
-- [ ] B5 — Test E2E in staging + configurazione webhook in Furious (staging)
+- [x] B5 — Test locali completati: scenari approved, skipped,
+      payload non valido verificati in locale con curl.
+      Test E2E su staging da completare dopo il deploy.
 - [ ] B6 — Deploy produzione + configurazione webhook Furious (produzione)
 
 ### Sottofase C — Release Fatture Passive
@@ -137,8 +141,9 @@ docs/project/
 
 ## §6. API Furious — riferimento rapido
 
-**Autenticazione:** Bearer token via `POST /api/v2/auth/` → risposta con `token` + `expires`.
-**Assenze:** `PUT /api/v2/absence/` con `{id, status}` — status 1=Confermare, 2=Annullare.
+**Autenticazione:** `POST /api/v2/auth/` con body `{ "action": "auth", "data": { "username": "...", "password": "..." } }` → risposta con `token`.
+**Assenze:** `PUT /api/v2/absence/` con body `{ "action": "update", "data": { "id": <id>, "status": 1 } }` — status 1=Confermare, 2=Annullare. L'ID va nel body (`data.id`), non nell'URL.
+**Lettura assenza:** `GET /api/v2/absence/?id=<id>` — ID come query string, non nel path.
 **Acquisti:** `POST /api/v2/purchase/` con `{cost_name, amount_ht, vat, currency, project_id, ...}`.
 **Pagamenti parziali:** `POST /api/v2/purchase-partial/`.
 **Entità aziendali:** `dudemilano | dudeoriginals | dudesrl | dudethings`.
@@ -217,6 +222,7 @@ src/
 | `CLOUD_TASKS_QUEUE_ABSENCES` | Nome coda Cloud Tasks assenze |
 | `CLOUD_TASKS_QUEUE_INVOICES` | Nome coda Cloud Tasks fatture |
 | `CLOUD_TASKS_LOCATION` | Regione Cloud Tasks |
-| `FURIOUS_EMAIL` | Credenziali Furious API |
+| `FURIOUS_BASE_URL` | URL base Furious (default prod, override per sandbox locale) |
+| `FURIOUS_USERNAME` | Credenziali Furious API |
 | `FURIOUS_PASSWORD` | Credenziali Furious API |
 | `SENTRY_DSN` | DSN Sentry (opzionale in locale) |

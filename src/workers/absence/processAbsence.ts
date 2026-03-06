@@ -79,7 +79,7 @@ export const processAbsence: WorkerFn = async (ctx) => {
 
     // Approva l'assenza su Furious
     logger.info('external_api_called', {
-      endpoint: `/api/v2/conge/${furiousAbsenceId}/`,
+      endpoint: '/api/v2/absence/',
       method: 'PUT',
       statusCode: 0,
     })
@@ -87,7 +87,7 @@ export const processAbsence: WorkerFn = async (ctx) => {
     await approveAbsence(furiousAbsenceId)
 
     logger.info('external_api_called', {
-      endpoint: `/api/v2/conge/${furiousAbsenceId}/`,
+      endpoint: '/api/v2/absence/',
       method: 'PUT',
       statusCode: 200,
     })

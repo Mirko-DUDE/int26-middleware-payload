@@ -610,3 +610,89 @@ Quando arriverà l'esigenza del filtro per tipo:
 Se in futuro si aggiungono flussi auto-approvabili con owner diverso da HR
 (es. note spese → Amministrazione), creare collection separate per flusso
 invece di riutilizzare questa tramite `flowType`.
+
+## [2026-03-06] Fix endpoint Furious e Secret Manager in locale
+
+**Problema 1:** `approveAbsence()` e `getAbsence()` in `src/lib/furious/api.ts`
+chiamavano l'endpoint `/api/v2/conge/` che non esiste nell'API Furious v2.
+Le chiamate restituivano 404 in fase di test locale.
+
+**Causa:** Errore di trascrizione durante la scrittura iniziale del modulo —
+il path corretto è `/api/v2/absence/` come da documentazione Furious API v2.
+
+**Soluzione:** Sostituito `/api/v2/conge/` con `/api/v2/absence/` in entrambe
+le funzioni `approveAbsence()` e `getAbsence()`.
+
+**File aggiornati:** `src/lib/furious/api.ts`
+
+---
+
+**Problema 2:** `getFuriousToken()` in `src/lib/furious/auth.ts` chiamava
+`getSecret()` e `setSecret()` (Google Secret Manager) anche in ambiente locale,
+causando crash con "Could not load the default credentials" in assenza di
+credenziali GCP.
+
+**Causa:** Il codice non distingueva tra ambiente locale e produzione per
+l'accesso a Secret Manager.
+
+**Soluzione:** Entrambe le operazioni su Secret Manager (lettura iniziale del
+token cached e scrittura dopo nuovo fetch) sono ora condizionate a
+`process.env.NODE_ENV === 'production'`. In locale la cache in-memory è
+sufficiente per evitare chiamate ripetute all'endpoint di autenticazione Furious.
+
+**File aggiornati:** `src/lib/furious/auth.ts`
+
+---
+
+## [2026-03-06] FURIOUS_BASE_URL hardcoded — reso configurabile via env var
+
+**Problema:**
+`FURIOUS_BASE_URL` era hardcoded come stringa letterale in `src/lib/furious/auth.ts` e
+`src/lib/furious/api.ts`. Impossibile puntare all'ambiente sandbox Furious
+(`dudesandbox.furious-squad.com`) in sviluppo locale senza modificare il codice.
+
+**Causa:**
+Costante definita inline invece di leggere da env var con fallback.
+
+**Soluzione:**
+```typescript
+const FURIOUS_BASE_URL = process.env.FURIOUS_BASE_URL ?? 'https://dude.furious-squad.com'
+```
+Aggiunta `FURIOUS_BASE_URL=https://dudesandbox.furious-squad.com` nel `.env` locale.
+In produzione la variabile non è impostata → il fallback garantisce l'URL corretto senza
+configurazione aggiuntiva al deploy.
+
+**File aggiornati:**
+- `src/lib/furious/auth.ts` — `FURIOUS_BASE_URL` da env var con fallback
+- `src/lib/furious/api.ts` — `FURIOUS_BASE_URL` da env var con fallback
+- `.env` — aggiunta `FURIOUS_BASE_URL` con URL sandbox
+- `docs/project/030-furious-api.md` — creato (documentazione completa modulo Furious)
+- `.cursor/rules/030-furious-api.mdc` — creato (pattern e vincoli per LLM)
+
+---
+
+## [2026-03-06] Furious auth: body con pattern action + data, non formato flat
+
+**Problema:**
+`fetchNewToken()` in `src/lib/furious/auth.ts` inviava il body di autenticazione come
+`{ username, password }` (formato flat). La chiamata restituiva HTTP 200 ma il JSON
+non conteneva `token` — causando l'errore "Furious auth: token mancante nella risposta".
+
+**Causa:**
+Furious API v2 usa il pattern `action` + `data` per tutti gli endpoint, inclusa
+l'autenticazione. Il formato flat non viene riconosciuto e Furious risponde con un
+body di errore invece di `{ token: "..." }`.
+
+**Soluzione:**
+```typescript
+// Prima (errato)
+body: JSON.stringify({ username, password })
+
+// Dopo (corretto)
+body: JSON.stringify({ action: 'auth', data: { username, password } })
+```
+
+**File aggiornati:**
+- `src/lib/furious/auth.ts` — body autenticazione corretto
+- `docs/project/030-furious-api.md` — aggiunta sezione formato body auth
+- `.cursor/rules/030-furious-api.mdc` — aggiunta REGOLA 2 su pattern action + data
